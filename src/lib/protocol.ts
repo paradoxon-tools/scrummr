@@ -2,6 +2,34 @@ export const ESTIMATE_OPTIONS = ['0', '1', '2', '3', '5', '8', '13', '21', '?'] 
 
 export type EstimateOption = (typeof ESTIMATE_OPTIONS)[number]
 
+export type IssueEditorField = {
+  id: string
+  label: string
+  value: string
+}
+
+export type IssueSubtask = {
+  id: string
+  title: string
+  description: string
+  done: boolean
+}
+
+export type IssueDraftSnapshot = {
+  issueId: string
+  issueKey: string
+  issueUrl: string
+  fields: IssueEditorField[]
+  subtasks: IssueSubtask[]
+  updatedBy: string | null
+  updatedAt: string
+}
+
+export type IssueWorkspaceSnapshot = {
+  selectedIssueId: string | null
+  drafts: IssueDraftSnapshot[]
+}
+
 export type ClientEvent =
   | { type: 'join'; name: string }
   | { type: 'update_name'; name: string }
@@ -9,6 +37,40 @@ export type ClientEvent =
   | { type: 'set_vote'; vote: EstimateOption | null }
   | { type: 'reveal' }
   | { type: 'next_ticket' }
+  | {
+      type: 'select_issue'
+      issueId: string
+      issueKey: string
+      issueUrl: string
+      fields: IssueEditorField[]
+    }
+  | {
+      type: 'set_issue_field'
+      issueId: string
+      issueKey: string
+      issueUrl: string
+      field: IssueEditorField
+    }
+  | {
+      type: 'add_issue_subtask'
+      issueId: string
+      issueKey: string
+      issueUrl: string
+      title: string
+    }
+  | {
+      type: 'update_issue_subtask'
+      issueId: string
+      subtaskId: string
+      title?: string
+      description?: string
+      done?: boolean
+    }
+  | {
+      type: 'remove_issue_subtask'
+      issueId: string
+      subtaskId: string
+    }
 
 export type ParticipantView = {
   id: string
@@ -23,6 +85,7 @@ export type RoomStateSnapshot = {
   myId: string
   myVote: EstimateOption | null
   participants: ParticipantView[]
+  issueWorkspace: IssueWorkspaceSnapshot
 }
 
 export type ServerEvent =

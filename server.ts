@@ -2,6 +2,8 @@ import {
   ESTIMATE_OPTIONS,
   type ClientEvent,
   type EstimateOption,
+  type IssueDraftSnapshot,
+  type IssueEditorField,
   type RoomStateSnapshot,
   type ServerEvent,
 } from './src/lib/protocol'
@@ -16,13 +18,75 @@ type SocketData = {
   id: string
 }
 
+type JiraIssue = {
+  id: string
+  key: string
+  summary: string
+  description: string
+  status: string
+  assignee: string | null
+  priority: string | null
+  issueType: string
+  reporter: string | null
+  createdAt: string | null
+  updatedAt: string | null
+  url: string
+}
+
+type JiraSprint = {
+  id: number
+  name: string
+  state: string
+  startDate: string | null
+  endDate: string | null
+  completeDate: string | null
+}
+
+type JiraIssueCategory = 'current' | 'future' | 'backlog'
+
+type JiraIssueWithSprint = JiraIssue & {
+  sprint: JiraSprint | null
+}
+
+type JiraIssueGroup = {
+  id: string
+  name: string
+  category: JiraIssueCategory
+  sprint: JiraSprint | null
+  issues: JiraIssue[]
+}
+
+type JiraIssuePayload = {
+  groups: JiraIssueGroup[]
+}
+
 const port = Number(Bun.env.WS_PORT ?? 3001)
 const allowedVotes = new Set<string>(ESTIMATE_OPTIONS)
 const users = new Map<string, UserState>()
 const sockets = new Map<string, Bun.ServerWebSocket<SocketData>>()
 const decoder = new TextDecoder()
+const jiraPageSize = 100
+const jiraMaxPages = 40
+const jiraBaseIssueFields = ['summary', 'description', 'status', 'assignee', 'priority', 'issuetype', 'reporter', 'created', 'updated']
+const jiraCorsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+}
+const issueFieldMaxLength = 16000
+const issueFieldLabelMaxLength = 80
+const issueFieldIdMaxLength = 80
+const issueKeyMaxLength = 40
+const issueUrlMaxLength = 600
+const subtaskTitleMaxLength = 240
+const subtaskDescriptionMaxLength = 16000
+const maxSubtasksPerIssue = 100
+const maxIssueFieldsPerDraft = 64
 
 let revealed = false
+let selectedIssueId: string | null = null
+
+const issueDrafts = new Map<string, IssueDraftSnapshot>()
 
 const hueDistance = (a: number, b: number): number => {
   const diff = Math.abs(a - b) % 360
@@ -71,6 +135,655 @@ const pickDistinctHue = (excludeUserId?: string, avoidHue?: number): number => {
 
 const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
 
+const normalizeIssueId = (value: unknown): string =>
+  typeof value === 'string' ? value.trim().slice(0, issueFieldIdMaxLength) : ''
+
+const normalizeIssueKey = (value: unknown): string =>
+  typeof value === 'string' ? value.trim().toUpperCase().slice(0, issueKeyMaxLength) : ''
+
+const normalizeIssueUrl = (value: unknown): string => (typeof value === 'string' ? value.trim().slice(0, issueUrlMaxLength) : '')
+
+const normalizeIssueText = (value: unknown, maxLength = issueFieldMaxLength): string =>
+  typeof value === 'string' ? value.replace(/\r\n/g, '\n').slice(0, maxLength) : ''
+
+const normalizeFieldId = (value: unknown): string => {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '_')
+    .slice(0, issueFieldIdMaxLength)
+}
+
+const normalizeFieldLabel = (value: unknown, fallback: string): string => {
+  if (typeof value !== 'string') {
+    return fallback.slice(0, issueFieldLabelMaxLength)
+  }
+
+  const normalized = value.trim().slice(0, issueFieldLabelMaxLength)
+  return normalized || fallback.slice(0, issueFieldLabelMaxLength)
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+
+const jsonResponse = (status: number, payload: Record<string, unknown>): Response =>
+  new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      ...jiraCorsHeaders,
+      'Content-Type': 'application/json',
+    },
+  })
+
+const normalizeJiraOrigin = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+
+  try {
+    const parsed = new URL(withProtocol)
+    if (!parsed.hostname) {
+      return null
+    }
+    return parsed.origin
+  } catch {
+    return null
+  }
+}
+
+const toSafeString = (value: unknown, fallback: string): string =>
+  typeof value === 'string' && value.trim() ? value : fallback
+
+const normalizeTicketPrefix = (value: unknown): string =>
+  typeof value === 'string' ? value.toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 20) : ''
+
+const adfNodeToText = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (!isRecord(value)) {
+    return ''
+  }
+
+  if (value.type === 'hardBreak') {
+    return '\n'
+  }
+
+  const nodeText = typeof value.text === 'string' ? value.text : ''
+  const childText = Array.isArray(value.content) ? value.content.map(adfNodeToText).join('') : ''
+  const combined = `${nodeText}${childText}`
+
+  if (value.type === 'paragraph' || value.type === 'heading') {
+    return `${combined}\n`
+  }
+
+  if (value.type === 'listItem') {
+    return `- ${combined}\n`
+  }
+
+  return combined
+}
+
+const toJiraDescriptionText = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return normalizeIssueText(value)
+  }
+
+  if (!isRecord(value) || !Array.isArray(value.content)) {
+    return ''
+  }
+
+  return normalizeIssueText(value.content.map(adfNodeToText).join('').replace(/\n{3,}/g, '\n\n').trim())
+}
+
+const toNormalizedSprintState = (value: unknown): string =>
+  typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : 'unknown'
+
+const toNullableDate = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value : null)
+
+const parseJiraSprint = (value: unknown): JiraSprint | null => {
+  if (isRecord(value)) {
+    const id = Number.parseInt(String(value.id ?? ''), 10)
+    if (!Number.isFinite(id) || id <= 0) {
+      return null
+    }
+
+    return {
+      id,
+      name: toSafeString(value.name, `Sprint ${id}`),
+      state: toNormalizedSprintState(value.state),
+      startDate: toNullableDate(value.startDate),
+      endDate: toNullableDate(value.endDate),
+      completeDate: toNullableDate(value.completeDate),
+    }
+  }
+
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const readField = (fieldName: string): string | null => {
+    const match = value.match(new RegExp(`\\b${fieldName}=([^,\\]]+)`))
+    if (!match) {
+      return null
+    }
+
+    const parsed = match[1].trim()
+    if (!parsed || parsed === '<null>') {
+      return null
+    }
+
+    return parsed
+  }
+
+  const rawId = readField('id')
+  const id = rawId === null ? Number.NaN : Number.parseInt(rawId, 10)
+  if (!Number.isFinite(id) || id <= 0) {
+    return null
+  }
+
+  return {
+    id,
+    name: readField('name') ?? `Sprint ${id}`,
+    state: toNormalizedSprintState(readField('state')),
+    startDate: readField('startDate'),
+    endDate: readField('endDate'),
+    completeDate: readField('completeDate'),
+  }
+}
+
+const pickPreferredSprint = (
+  candidates: JiraSprint[],
+  preferredState: 'active' | 'future' | null,
+): JiraSprint | null => {
+  if (candidates.length === 0) {
+    return null
+  }
+
+  if (preferredState) {
+    const preferred = candidates.find((sprint) => sprint.state === preferredState)
+    if (preferred) {
+      return preferred
+    }
+  }
+
+  const active = candidates.find((sprint) => sprint.state === 'active')
+  if (active) {
+    return active
+  }
+
+  const future = candidates.find((sprint) => sprint.state === 'future')
+  if (future) {
+    return future
+  }
+
+  return candidates[candidates.length - 1]
+}
+
+const parseIssueSprint = (value: unknown, preferredState: 'active' | 'future' | null): JiraSprint | null => {
+  if (Array.isArray(value)) {
+    const parsedSprints = value.map(parseJiraSprint).filter((sprint): sprint is JiraSprint => sprint !== null)
+    return pickPreferredSprint(parsedSprints, preferredState)
+  }
+
+  return parseJiraSprint(value)
+}
+
+const normalizeIssueEditorField = (value: unknown): IssueEditorField | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const id = normalizeFieldId(value.id)
+  if (!id) {
+    return null
+  }
+
+  return {
+    id,
+    label: normalizeFieldLabel(value.label, id),
+    value: normalizeIssueText(value.value),
+  }
+}
+
+const normalizeIssueEditorFields = (value: unknown): IssueEditorField[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const uniqueFields = new Map<string, IssueEditorField>()
+  for (const fieldCandidate of value) {
+    const field = normalizeIssueEditorField(fieldCandidate)
+    if (!field) {
+      continue
+    }
+
+    if (uniqueFields.size >= maxIssueFieldsPerDraft && !uniqueFields.has(field.id)) {
+      continue
+    }
+
+    uniqueFields.set(field.id, field)
+  }
+
+  return [...uniqueFields.values()]
+}
+
+const cloneIssueDraft = (draft: IssueDraftSnapshot): IssueDraftSnapshot => ({
+  issueId: draft.issueId,
+  issueKey: draft.issueKey,
+  issueUrl: draft.issueUrl,
+  fields: draft.fields.map((field) => ({ ...field })),
+  subtasks: draft.subtasks.map((subtask) => ({ ...subtask })),
+  updatedBy: draft.updatedBy,
+  updatedAt: draft.updatedAt,
+})
+
+const touchIssueDraft = (draft: IssueDraftSnapshot, updatedBy: string | null): void => {
+  draft.updatedBy = updatedBy
+  draft.updatedAt = new Date().toISOString()
+}
+
+const ensureIssueDraft = (
+  issueId: string,
+  issueKey: string,
+  issueUrl: string,
+  seedFields: IssueEditorField[],
+  updatedBy: string | null,
+): IssueDraftSnapshot => {
+  const existing = issueDrafts.get(issueId)
+  if (existing) {
+    if (issueKey) {
+      existing.issueKey = issueKey
+    }
+    if (issueUrl) {
+      existing.issueUrl = issueUrl
+    }
+
+    if (seedFields.length > 0) {
+      const existingFieldIds = new Set(existing.fields.map((field) => field.id))
+      for (const seedField of seedFields) {
+        if (existing.fields.length >= maxIssueFieldsPerDraft) {
+          break
+        }
+
+        if (existingFieldIds.has(seedField.id)) {
+          continue
+        }
+
+        existing.fields.push(seedField)
+        existingFieldIds.add(seedField.id)
+      }
+    }
+
+    touchIssueDraft(existing, updatedBy)
+    return existing
+  }
+
+  const fields = seedFields.length > 0 ? seedFields : [{ id: 'description', label: 'Description', value: '' }]
+  const draft: IssueDraftSnapshot = {
+    issueId,
+    issueKey,
+    issueUrl,
+    fields,
+    subtasks: [],
+    updatedBy,
+    updatedAt: new Date().toISOString(),
+  }
+
+  issueDrafts.set(issueId, draft)
+  return draft
+}
+
+const toWorkspaceSnapshot = (): RoomStateSnapshot['issueWorkspace'] => ({
+  selectedIssueId,
+  drafts: [...issueDrafts.values()]
+    .sort((a, b) => a.issueKey.localeCompare(b.issueKey))
+    .map((draft) => cloneIssueDraft(draft)),
+})
+
+const normalizeSubtaskTitle = (value: unknown): string => normalizeIssueText(value, subtaskTitleMaxLength).trim()
+
+const normalizeSubtaskDescription = (value: unknown): string => normalizeIssueText(value, subtaskDescriptionMaxLength)
+
+const mapJiraIssues = (
+  jiraOrigin: string,
+  payload: unknown,
+  sprintFieldId: string | null,
+  preferredSprintState: 'active' | 'future' | null,
+): JiraIssueWithSprint[] | null => {
+  if (!isRecord(payload) || !Array.isArray(payload.issues)) {
+    return null
+  }
+
+  return payload.issues
+    .filter((issue): issue is Record<string, unknown> => isRecord(issue))
+    .map((issue) => {
+      const key = toSafeString(issue.key, 'UNKNOWN')
+      const id = toSafeString(issue.id, key)
+      const fields = isRecord(issue.fields) ? issue.fields : {}
+      const statusField = isRecord(fields.status) ? fields.status : {}
+      const assigneeField = isRecord(fields.assignee) ? fields.assignee : {}
+      const priorityField = isRecord(fields.priority) ? fields.priority : {}
+      const issueTypeField = isRecord(fields.issuetype) ? fields.issuetype : {}
+      const reporterField = isRecord(fields.reporter) ? fields.reporter : {}
+      const sprintField = sprintFieldId && fields[sprintFieldId] !== undefined ? fields[sprintFieldId] : fields.sprint
+
+      return {
+        id,
+        key,
+        summary: toSafeString(fields.summary, '(no summary)'),
+        description: toJiraDescriptionText(fields.description),
+        status: toSafeString(statusField.name, 'Unknown'),
+        assignee: typeof assigneeField.displayName === 'string' ? assigneeField.displayName : null,
+        priority: typeof priorityField.name === 'string' ? priorityField.name : null,
+        issueType: toSafeString(issueTypeField.name, 'Issue'),
+        reporter: typeof reporterField.displayName === 'string' ? reporterField.displayName : null,
+        createdAt: typeof fields.created === 'string' ? fields.created : null,
+        updatedAt: typeof fields.updated === 'string' ? fields.updated : null,
+        url: `${jiraOrigin}/browse/${encodeURIComponent(key)}`,
+        sprint: parseIssueSprint(sprintField, preferredSprintState),
+      }
+    })
+}
+
+const jiraErrorMessage = (status: number, payload: unknown): string => {
+  if (isRecord(payload)) {
+    if (Array.isArray(payload.errorMessages) && typeof payload.errorMessages[0] === 'string') {
+      return payload.errorMessages[0]
+    }
+    if (typeof payload.message === 'string') {
+      return payload.message
+    }
+  }
+
+  return `Jira returned HTTP ${status}.`
+}
+
+const jiraRequestHeaders = (authorization: string): Record<string, string> => ({
+  Authorization: `Basic ${authorization}`,
+  Accept: 'application/json',
+  'Content-Type': 'application/json',
+})
+
+const fetchSprintFieldId = async (jiraOrigin: string, authorization: string): Promise<string | null> => {
+  let response: Response
+  let payload: unknown
+
+  try {
+    response = await fetch(`${jiraOrigin}/rest/api/3/field`, {
+      method: 'GET',
+      headers: jiraRequestHeaders(authorization),
+    })
+
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
+  } catch {
+    return null
+  }
+
+  if (!response.ok || !Array.isArray(payload)) {
+    return null
+  }
+
+  for (const field of payload) {
+    if (!isRecord(field) || typeof field.id !== 'string') {
+      continue
+    }
+
+    const schema = isRecord(field.schema) ? field.schema : null
+    const customSchema = schema && typeof schema.custom === 'string' ? schema.custom.toLowerCase() : ''
+    const fieldName = typeof field.name === 'string' ? field.name.trim().toLowerCase() : ''
+
+    if (customSchema.includes('gh-sprint') || fieldName === 'sprint') {
+      return field.id
+    }
+  }
+
+  return null
+}
+
+const withoutSprint = (issue: JiraIssueWithSprint): JiraIssue => ({
+  id: issue.id,
+  key: issue.key,
+  summary: issue.summary,
+  description: issue.description,
+  status: issue.status,
+  assignee: issue.assignee,
+  priority: issue.priority,
+  issueType: issue.issueType,
+  reporter: issue.reporter,
+  createdAt: issue.createdAt,
+  updatedAt: issue.updatedAt,
+  url: issue.url,
+})
+
+const toDateMs = (value: string | null): number => {
+  if (!value) {
+    return Number.POSITIVE_INFINITY
+  }
+
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed
+}
+
+const groupIssuesBySprint = (
+  issues: JiraIssueWithSprint[],
+  category: 'current' | 'future',
+): JiraIssueGroup[] => {
+  const grouped = new Map<string, JiraIssueGroup>()
+
+  for (const issue of issues) {
+    const groupId = issue.sprint ? `${category}-${issue.sprint.id}` : `${category}-unspecified`
+    const existing = grouped.get(groupId)
+
+    if (existing) {
+      existing.issues.push(withoutSprint(issue))
+      continue
+    }
+
+    grouped.set(groupId, {
+      id: groupId,
+      name: issue.sprint?.name ?? (category === 'current' ? 'Current sprint' : 'Future sprint'),
+      category,
+      sprint: issue.sprint,
+      issues: [withoutSprint(issue)],
+    })
+  }
+
+  return [...grouped.values()].sort((a, b) => {
+    const aStartDate = toDateMs(a.sprint?.startDate ?? null)
+    const bStartDate = toDateMs(b.sprint?.startDate ?? null)
+    if (aStartDate !== bStartDate) {
+      return aStartDate - bStartDate
+    }
+
+    return a.name.localeCompare(b.name)
+  })
+}
+
+const fetchAllSearchIssues = async (
+  jiraOrigin: string,
+  authorization: string,
+  jql: string,
+  issueFields: string[],
+  sprintFieldId: string | null,
+  preferredSprintState: 'active' | 'future' | null,
+): Promise<JiraIssueWithSprint[] | Response> => {
+  let startAt = 0
+  let nextPageToken: string | null = null
+  let useLegacyEndpoint = false
+  let page = 0
+  const issues: JiraIssueWithSprint[] = []
+
+  while (page < jiraMaxPages) {
+    let response: Response
+    let payload: unknown
+    try {
+      if (useLegacyEndpoint) {
+        response = await fetch(`${jiraOrigin}/rest/api/3/search`, {
+          method: 'POST',
+          headers: jiraRequestHeaders(authorization),
+          body: JSON.stringify({
+            jql,
+            startAt,
+            maxResults: jiraPageSize,
+            fields: issueFields,
+          }),
+        })
+      } else {
+        response = await fetch(`${jiraOrigin}/rest/api/3/search/jql`, {
+          method: 'POST',
+          headers: jiraRequestHeaders(authorization),
+          body: JSON.stringify({
+            jql,
+            nextPageToken: nextPageToken ?? undefined,
+            maxResults: jiraPageSize,
+            fields: issueFields,
+          }),
+        })
+
+        if (response.status === 404) {
+          useLegacyEndpoint = true
+          continue
+        }
+      }
+
+      try {
+        payload = await response.json()
+      } catch {
+        payload = null
+      }
+    } catch {
+      return jsonResponse(502, { message: 'Could not reach Jira while loading board issues.' })
+    }
+
+    if (!response.ok) {
+      return jsonResponse(response.status, { message: jiraErrorMessage(response.status, payload) })
+    }
+
+    const pageIssues = mapJiraIssues(jiraOrigin, payload, sprintFieldId, preferredSprintState)
+    if (!pageIssues) {
+      return jsonResponse(502, { message: 'Unexpected Jira issue response format.' })
+    }
+
+    issues.push(...pageIssues)
+
+    if (useLegacyEndpoint) {
+      const total = isRecord(payload) && typeof payload.total === 'number' ? payload.total : null
+      if (pageIssues.length === 0) {
+        break
+      }
+      if (total !== null && startAt + jiraPageSize >= total) {
+        break
+      }
+      if (total === null && pageIssues.length < jiraPageSize) {
+        break
+      }
+
+      startAt += jiraPageSize
+    } else {
+      const payloadRecord = isRecord(payload) ? payload : null
+      const hasMore =
+        payloadRecord !== null &&
+        typeof payloadRecord.nextPageToken === 'string' &&
+        payloadRecord.nextPageToken.length > 0 &&
+        payloadRecord.isLast !== true
+
+      if (!hasMore || pageIssues.length === 0) {
+        break
+      }
+
+      nextPageToken = payloadRecord.nextPageToken as string
+    }
+
+    page += 1
+  }
+
+  return issues
+}
+
+const fetchJiraIssues = async (request: Request): Promise<Response> => {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return jsonResponse(400, { message: 'Invalid JSON payload.' })
+  }
+
+  if (!isRecord(body)) {
+    return jsonResponse(400, { message: 'Payload must be an object.' })
+  }
+
+  const jiraOrigin = normalizeJiraOrigin(body.baseUrl)
+  const email = typeof body.email === 'string' ? body.email.trim() : ''
+  const apiToken = typeof body.apiToken === 'string' ? body.apiToken.trim() : ''
+  const ticketPrefix = normalizeTicketPrefix(body.ticketPrefix)
+
+  if (!jiraOrigin || !email || !apiToken || !ticketPrefix) {
+    return jsonResponse(400, { message: 'Jira URL, email, API token, and ticket prefix are required.' })
+  }
+
+  const authorization = Buffer.from(`${email}:${apiToken}`).toString('base64')
+  const sprintFieldId = await fetchSprintFieldId(jiraOrigin, authorization)
+  const issueFields = sprintFieldId ? [...jiraBaseIssueFields, sprintFieldId] : jiraBaseIssueFields
+
+  const projectClause = `project = "${ticketPrefix}"`
+  const currentSprintJql = `${projectClause} AND sprint in openSprints() ORDER BY Rank ASC, created ASC`
+  const nextSprintJql = `${projectClause} AND sprint in futureSprints() ORDER BY Rank ASC, created ASC`
+  const backlogJql = `${projectClause} AND sprint is EMPTY ORDER BY Rank ASC, created ASC`
+
+  const [currentIssuesResult, nextIssuesResult, backlogIssuesResult] = await Promise.all([
+    fetchAllSearchIssues(jiraOrigin, authorization, currentSprintJql, issueFields, sprintFieldId, 'active'),
+    fetchAllSearchIssues(jiraOrigin, authorization, nextSprintJql, issueFields, sprintFieldId, 'future'),
+    fetchAllSearchIssues(jiraOrigin, authorization, backlogJql, issueFields, sprintFieldId, null),
+  ])
+
+  if (currentIssuesResult instanceof Response) {
+    return currentIssuesResult
+  }
+  if (nextIssuesResult instanceof Response) {
+    return nextIssuesResult
+  }
+  if (backlogIssuesResult instanceof Response) {
+    return backlogIssuesResult
+  }
+
+  const groups: JiraIssueGroup[] = [
+    ...groupIssuesBySprint(currentIssuesResult, 'current'),
+    ...groupIssuesBySprint(nextIssuesResult, 'future'),
+  ]
+
+  if (backlogIssuesResult.length > 0) {
+    groups.push({
+      id: 'backlog',
+      name: 'Backlog / No sprint',
+      category: 'backlog',
+      sprint: null,
+      issues: backlogIssuesResult.map(withoutSprint),
+    })
+  }
+
+  const response: JiraIssuePayload = {
+    groups,
+  }
+
+  return jsonResponse(200, response)
+}
+
 const parseClientEvent = (rawMessage: string | Uint8Array | ArrayBuffer): ClientEvent | null => {
   const text =
     typeof rawMessage === 'string'
@@ -104,6 +817,7 @@ const makeSnapshot = (clientId: string): RoomStateSnapshot => {
     myId: clientId,
     myVote: users.get(clientId)?.vote ?? null,
     participants,
+    issueWorkspace: toWorkspaceSnapshot(),
   }
 }
 
@@ -153,8 +867,20 @@ const setVote = (clientId: string, vote: EstimateOption | null): boolean => {
 
 const server = Bun.serve<SocketData>({
   port,
-  fetch(request, serverInstance) {
+  async fetch(request, serverInstance) {
     const requestUrl = new URL(request.url)
+
+    if (requestUrl.pathname === '/api/jira/issues' && request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: jiraCorsHeaders })
+    }
+
+    if (requestUrl.pathname === '/api/jira/issues') {
+      if (request.method !== 'POST') {
+        return jsonResponse(405, { message: 'Method not allowed.' })
+      }
+      return fetchJiraIssues(request)
+    }
+
     if (requestUrl.pathname === '/ws') {
       const id = crypto.randomUUID()
       if (serverInstance.upgrade(request, { data: { id } })) {
@@ -233,6 +959,170 @@ const server = Bun.serve<SocketData>({
           broadcastSnapshots()
           return
         }
+        case 'select_issue': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before selecting a ticket.' })
+            return
+          }
+
+          const issueId = normalizeIssueId(event.issueId)
+          const issueKey = normalizeIssueKey(event.issueKey)
+          const issueUrl = normalizeIssueUrl(event.issueUrl)
+          if (!issueId || !issueKey) {
+            send(ws, { type: 'server_error', message: 'Issue selection is missing required details.' })
+            return
+          }
+
+          const fields = normalizeIssueEditorFields(event.fields)
+          ensureIssueDraft(issueId, issueKey, issueUrl, fields, clientId)
+          selectedIssueId = issueId
+          broadcastSnapshots()
+          return
+        }
+        case 'set_issue_field': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before editing ticket fields.' })
+            return
+          }
+
+          const issueId = normalizeIssueId(event.issueId)
+          const issueKey = normalizeIssueKey(event.issueKey)
+          const issueUrl = normalizeIssueUrl(event.issueUrl)
+          const field = normalizeIssueEditorField(event.field)
+          if (!issueId || !issueKey || !field) {
+            send(ws, { type: 'server_error', message: 'Field update was missing required values.' })
+            return
+          }
+
+          const draft = ensureIssueDraft(issueId, issueKey, issueUrl, [field], clientId)
+          const existingField = draft.fields.find((entry) => entry.id === field.id)
+          if (existingField) {
+            existingField.label = field.label
+            existingField.value = field.value
+          } else if (draft.fields.length < maxIssueFieldsPerDraft) {
+            draft.fields.push(field)
+          }
+
+          touchIssueDraft(draft, clientId)
+          selectedIssueId = issueId
+          broadcastSnapshots()
+          return
+        }
+        case 'add_issue_subtask': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before creating subtasks.' })
+            return
+          }
+
+          const issueId = normalizeIssueId(event.issueId)
+          const issueKey = normalizeIssueKey(event.issueKey)
+          const issueUrl = normalizeIssueUrl(event.issueUrl)
+          const title = normalizeSubtaskTitle(event.title)
+          if (!issueId || !issueKey || !title) {
+            send(ws, { type: 'server_error', message: 'Subtask title cannot be empty.' })
+            return
+          }
+
+          const draft = ensureIssueDraft(issueId, issueKey, issueUrl, [], clientId)
+          if (draft.subtasks.length >= maxSubtasksPerIssue) {
+            send(ws, { type: 'server_error', message: 'This ticket already has the maximum number of subtasks.' })
+            return
+          }
+
+          draft.subtasks.push({
+            id: crypto.randomUUID(),
+            title,
+            description: '',
+            done: false,
+          })
+
+          touchIssueDraft(draft, clientId)
+          selectedIssueId = issueId
+          broadcastSnapshots()
+          return
+        }
+        case 'update_issue_subtask': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before editing subtasks.' })
+            return
+          }
+
+          const issueId = normalizeIssueId(event.issueId)
+          const subtaskId = typeof event.subtaskId === 'string' ? event.subtaskId.trim() : ''
+          if (!issueId || !subtaskId) {
+            send(ws, { type: 'server_error', message: 'Subtask update is missing identifiers.' })
+            return
+          }
+
+          const draft = issueDrafts.get(issueId)
+          if (!draft) {
+            send(ws, { type: 'server_error', message: 'Select a ticket before updating subtasks.' })
+            return
+          }
+
+          const subtask = draft.subtasks.find((item) => item.id === subtaskId)
+          if (!subtask) {
+            send(ws, { type: 'server_error', message: 'Subtask could not be found.' })
+            return
+          }
+
+          if ('title' in event) {
+            const nextTitle = normalizeSubtaskTitle(event.title)
+            if (!nextTitle) {
+              send(ws, { type: 'server_error', message: 'Subtask title cannot be empty.' })
+              return
+            }
+            subtask.title = nextTitle
+          }
+
+          if ('description' in event) {
+            subtask.description = normalizeSubtaskDescription(event.description)
+          }
+
+          if ('done' in event && typeof event.done === 'boolean') {
+            subtask.done = event.done
+          }
+
+          touchIssueDraft(draft, clientId)
+          selectedIssueId = issueId
+          broadcastSnapshots()
+          return
+        }
+        case 'remove_issue_subtask': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before editing subtasks.' })
+            return
+          }
+
+          const issueId = normalizeIssueId(event.issueId)
+          const subtaskId = typeof event.subtaskId === 'string' ? event.subtaskId.trim() : ''
+          if (!issueId || !subtaskId) {
+            send(ws, { type: 'server_error', message: 'Subtask removal is missing identifiers.' })
+            return
+          }
+
+          const draft = issueDrafts.get(issueId)
+          if (!draft) {
+            send(ws, { type: 'server_error', message: 'Select a ticket before removing subtasks.' })
+            return
+          }
+
+          const nextSubtasks = draft.subtasks.filter((item) => item.id !== subtaskId)
+          if (nextSubtasks.length === draft.subtasks.length) {
+            return
+          }
+
+          draft.subtasks = nextSubtasks
+          touchIssueDraft(draft, clientId)
+          selectedIssueId = issueId
+          broadcastSnapshots()
+          return
+        }
         case 'reveal': {
           if (users.size === 0 || revealed) {
             return
@@ -259,6 +1149,8 @@ const server = Bun.serve<SocketData>({
 
       if (users.size === 0) {
         revealed = false
+        selectedIssueId = null
+        issueDrafts.clear()
       }
 
       broadcastSnapshots()

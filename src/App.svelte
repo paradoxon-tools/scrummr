@@ -4,28 +4,102 @@
     ESTIMATE_OPTIONS,
     type ClientEvent,
     type EstimateOption,
+    type IssueDraftSnapshot,
+    type IssueEditorField,
+    type IssueSubtask,
     type RoomStateSnapshot,
     type ServerEvent,
   } from './lib/protocol'
 
+  type JiraConfig = {
+    baseUrl: string
+    email: string
+    apiToken: string
+    ticketPrefix: string
+  }
+
+  type JiraIssue = {
+    id: string
+    key: string
+    summary: string
+    description: string
+    status: string
+    assignee: string | null
+    priority: string | null
+    issueType: string
+    reporter: string | null
+    createdAt: string | null
+    updatedAt: string | null
+    url: string
+  }
+
+  type JiraSprint = {
+    id: number
+    name: string
+    state: string
+    startDate: string | null
+    endDate: string | null
+    completeDate: string | null
+  }
+
+  type JiraIssueCategory = 'current' | 'future' | 'backlog'
+
+  type JiraIssueGroup = {
+    id: string
+    name: string
+    category: JiraIssueCategory
+    sprint: JiraSprint | null
+    issues: JiraIssue[]
+  }
+
+  type JiraIssueResult = {
+    groups: JiraIssueGroup[]
+  }
+
   const STORAGE_KEY = 'scrummer.display_name'
+  const JIRA_STORAGE_KEY = 'scrummer.jira_config'
+
+  const createEmptyIssueWorkspace = (): RoomStateSnapshot['issueWorkspace'] => ({
+    selectedIssueId: null,
+    drafts: [],
+  })
 
   const createEmptyState = (): RoomStateSnapshot => ({
     revealed: false,
     myId: '',
     myVote: null,
     participants: [],
+    issueWorkspace: createEmptyIssueWorkspace(),
   })
 
+  const createDefaultJiraConfig = (): JiraConfig => ({
+    baseUrl: '',
+    email: '',
+    apiToken: '',
+    ticketPrefix: '',
+  })
+
+  const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+
+  const toStringOrEmpty = (value: unknown): string => (typeof value === 'string' ? value : '')
+
+  const normalizeTicketPrefix = (value: string): string => value.toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 20)
+
   let roomState: RoomStateSnapshot = createEmptyState()
+  let jiraConfig: JiraConfig = createDefaultJiraConfig()
+  let jiraIssues: JiraIssueResult | null = null
+  let jiraError = ''
+  let jiraMessage = ''
   let nameInput = ''
   let joinedName = ''
   let connectionMessage = ''
   let isConnected = false
   let isConnecting = false
   let isProfileEditing = false
+  let isJiraLoading = false
   let socket: WebSocket | null = null
   let profileSyncTimer: number | undefined
+  let jiraRequestCounter = 0
 
   const socketUrl = (): string => {
     const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim()
@@ -35,6 +109,15 @@
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
     return `${protocol}://${window.location.hostname}:3001/ws`
+  }
+
+  const apiBaseUrl = (): string => {
+    const configuredUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim()
+    if (configuredUrl) {
+      return configuredUrl.replace(/\/$/, '')
+    }
+
+    return `${window.location.protocol}//${window.location.hostname}:3001`
   }
 
   const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
@@ -49,12 +132,24 @@
     window.localStorage.removeItem(STORAGE_KEY)
   }
 
-  const send = (event: ClientEvent): void => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+  const saveJiraConfigLocally = (): void => {
+    const normalized = {
+      ...jiraConfig,
+      baseUrl: jiraConfig.baseUrl.trim(),
+      email: jiraConfig.email.trim(),
+      apiToken: jiraConfig.apiToken.trim(),
+      ticketPrefix: normalizeTicketPrefix(jiraConfig.ticketPrefix),
+    }
+
+    const hasAnyValue =
+      normalized.baseUrl !== '' || normalized.email !== '' || normalized.apiToken !== '' || normalized.ticketPrefix !== ''
+
+    if (!hasAnyValue) {
+      window.localStorage.removeItem(JIRA_STORAGE_KEY)
       return
     }
 
-    socket.send(JSON.stringify(event))
+    window.localStorage.setItem(JIRA_STORAGE_KEY, JSON.stringify(normalized))
   }
 
   const readStoredName = (): boolean => {
@@ -74,6 +169,44 @@
     return true
   }
 
+  const readStoredJiraConfig = (): boolean => {
+    const raw = window.localStorage.getItem(JIRA_STORAGE_KEY)
+    if (!raw) {
+      return false
+    }
+
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (!isRecord(parsed)) {
+        return false
+      }
+
+      jiraConfig = {
+        baseUrl: toStringOrEmpty(parsed.baseUrl).trim(),
+        email: toStringOrEmpty(parsed.email).trim(),
+        apiToken: toStringOrEmpty(parsed.apiToken).trim(),
+        ticketPrefix: normalizeTicketPrefix(toStringOrEmpty(parsed.ticketPrefix) || toStringOrEmpty(parsed.boardId)),
+      }
+
+      return (
+        jiraConfig.baseUrl !== '' &&
+        jiraConfig.email !== '' &&
+        jiraConfig.apiToken !== '' &&
+        jiraConfig.ticketPrefix !== ''
+      )
+    } catch {
+      return false
+    }
+  }
+
+  const send = (event: ClientEvent): void => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+
+    socket.send(JSON.stringify(event))
+  }
+
   const parseServerEvent = (payload: string): ServerEvent | null => {
     try {
       const parsed = JSON.parse(payload)
@@ -85,6 +218,391 @@
     } catch {
       return null
     }
+  }
+
+  const parseJiraIssueList = (payload: unknown): JiraIssue[] | null => {
+    if (!Array.isArray(payload)) {
+      return null
+    }
+
+    return payload
+      .filter((issue): issue is Record<string, unknown> => isRecord(issue))
+      .map((issue) => ({
+        id: toStringOrEmpty(issue.id),
+        key: toStringOrEmpty(issue.key),
+        summary: toStringOrEmpty(issue.summary),
+        description: toStringOrEmpty(issue.description),
+        status: toStringOrEmpty(issue.status),
+        assignee: typeof issue.assignee === 'string' && issue.assignee ? issue.assignee : null,
+        priority: typeof issue.priority === 'string' && issue.priority ? issue.priority : null,
+        issueType: toStringOrEmpty(issue.issueType) || 'Issue',
+        reporter: typeof issue.reporter === 'string' && issue.reporter ? issue.reporter : null,
+        createdAt: typeof issue.createdAt === 'string' ? issue.createdAt : null,
+        updatedAt: typeof issue.updatedAt === 'string' ? issue.updatedAt : null,
+        url: toStringOrEmpty(issue.url),
+      }))
+      .filter((issue) => issue.id !== '' && issue.key !== '' && issue.summary !== '')
+  }
+
+  const parseJiraSprint = (payload: unknown): JiraSprint | null => {
+    if (!isRecord(payload)) {
+      return null
+    }
+
+    const id = Number.parseInt(String(payload.id ?? ''), 10)
+    if (!Number.isFinite(id) || id <= 0) {
+      return null
+    }
+
+    return {
+      id,
+      name: toStringOrEmpty(payload.name) || 'Unnamed sprint',
+      state: toStringOrEmpty(payload.state) || 'unknown',
+      startDate: typeof payload.startDate === 'string' ? payload.startDate : null,
+      endDate: typeof payload.endDate === 'string' ? payload.endDate : null,
+      completeDate: typeof payload.completeDate === 'string' ? payload.completeDate : null,
+    }
+  }
+
+  const parseJiraIssueCategory = (payload: unknown): JiraIssueCategory | null => {
+    if (payload === 'current' || payload === 'future' || payload === 'backlog') {
+      return payload
+    }
+
+    return null
+  }
+
+  const parseJiraIssueGroup = (payload: unknown): JiraIssueGroup | null => {
+    if (!isRecord(payload)) {
+      return null
+    }
+
+    const category = parseJiraIssueCategory(payload.category)
+    const issues = parseJiraIssueList(payload.issues)
+    if (!category || !issues) {
+      return null
+    }
+
+    const fallbackName = category === 'backlog' ? 'Backlog / No sprint' : category === 'current' ? 'Current sprint' : 'Future sprint'
+    const name = toStringOrEmpty(payload.name) || fallbackName
+    const id = toStringOrEmpty(payload.id) || `${category}-${name}`
+
+    return {
+      id,
+      name,
+      category,
+      sprint: parseJiraSprint(payload.sprint),
+      issues,
+    }
+  }
+
+  const parseJiraIssueResult = (payload: unknown): JiraIssueResult | null => {
+    if (!isRecord(payload)) {
+      return null
+    }
+
+    if (!Array.isArray(payload.groups)) {
+      return null
+    }
+
+    const groups = payload.groups.map(parseJiraIssueGroup).filter((group): group is JiraIssueGroup => group !== null)
+    if (groups.length !== payload.groups.length) {
+      return null
+    }
+
+    return {
+      groups,
+    }
+  }
+
+  const formatJiraIssueCount = (count: number): string => `${count} issue${count === 1 ? '' : 's'}`
+
+  const jiraCategoryLabel = (category: JiraIssueCategory): string => {
+    if (category === 'current') {
+      return 'Current sprint'
+    }
+    if (category === 'future') {
+      return 'Future sprint'
+    }
+
+    return 'Backlog'
+  }
+
+  const normalizeEditorFieldId = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 80)
+
+  const normalizeEditorText = (value: string, maxLength = 16000): string => value.replace(/\r\n/g, '\n').slice(0, maxLength)
+
+  const createEditorField = (id: string, label: string, value: string): IssueEditorField => ({
+    id: normalizeEditorFieldId(id),
+    label: label.trim().slice(0, 80),
+    value: normalizeEditorText(value),
+  })
+
+  const buildIssueEditorFields = (issue: JiraIssue, sprintName: string): IssueEditorField[] => {
+    const fields: IssueEditorField[] = [
+      createEditorField('summary', 'Summary', issue.summary),
+      createEditorField('description', 'Description', issue.description),
+      createEditorField('status', 'Status', issue.status),
+      createEditorField('priority', 'Priority', issue.priority ?? ''),
+      createEditorField('assignee', 'Assignee', issue.assignee ?? ''),
+      createEditorField('issue_type', 'Issue Type', issue.issueType),
+      createEditorField('reporter', 'Reporter', issue.reporter ?? ''),
+      createEditorField('sprint', 'Sprint', sprintName),
+      createEditorField('planning_notes', 'Planning Notes', ''),
+    ]
+
+    const deduped = new Map<string, IssueEditorField>()
+    for (const field of fields) {
+      if (!field.id || deduped.has(field.id)) {
+        continue
+      }
+      deduped.set(field.id, field)
+    }
+
+    return [...deduped.values()]
+  }
+
+  const getFieldValue = (draft: IssueDraftSnapshot | null, fieldId: string): string => {
+    if (!draft) {
+      return ''
+    }
+
+    const normalizedFieldId = normalizeEditorFieldId(fieldId)
+    return draft.fields.find((field) => field.id === normalizedFieldId)?.value ?? ''
+  }
+
+  const formatTimestamp = (value: string | null): string => {
+    if (!value) {
+      return ''
+    }
+
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) {
+      return ''
+    }
+
+    return parsed.toLocaleString()
+  }
+
+  const selectIssue = (issue: JiraIssue, group: JiraIssueGroup): void => {
+    const sprintName = group.sprint?.name ?? group.name
+    send({
+      type: 'select_issue',
+      issueId: issue.id,
+      issueKey: issue.key,
+      issueUrl: issue.url,
+      fields: buildIssueEditorFields(issue, sprintName),
+    })
+  }
+
+  const selectedIssueIdentity = (): { issueId: string; issueKey: string; issueUrl: string } | null => {
+    const issueId = roomState.issueWorkspace.selectedIssueId
+    if (!issueId) {
+      return null
+    }
+
+    const draft = roomState.issueWorkspace.drafts.find((entry) => entry.issueId === issueId) ?? null
+    const issue = jiraIssues
+      ? jiraIssues.groups.flatMap((group) => group.issues).find((entry) => entry.id === issueId) ?? null
+      : null
+
+    const issueKey = draft?.issueKey || issue?.key || ''
+    const issueUrl = draft?.issueUrl || issue?.url || ''
+    if (!issueKey) {
+      return null
+    }
+
+    return {
+      issueId,
+      issueKey,
+      issueUrl,
+    }
+  }
+
+  const setIssueField = (field: IssueEditorField, value: string): void => {
+    const identity = selectedIssueIdentity()
+    if (!identity) {
+      return
+    }
+
+    send({
+      type: 'set_issue_field',
+      issueId: identity.issueId,
+      issueKey: identity.issueKey,
+      issueUrl: identity.issueUrl,
+      field: {
+        id: normalizeEditorFieldId(field.id),
+        label: field.label,
+        value: normalizeEditorText(value),
+      },
+    })
+  }
+
+  let newSubtaskTitle = ''
+
+  const addIssueSubtask = (): void => {
+    const identity = selectedIssueIdentity()
+    if (!identity) {
+      return
+    }
+
+    const title = normalizeEditorText(newSubtaskTitle, 240).trim()
+    if (!title) {
+      return
+    }
+
+    send({
+      type: 'add_issue_subtask',
+      issueId: identity.issueId,
+      issueKey: identity.issueKey,
+      issueUrl: identity.issueUrl,
+      title,
+    })
+    newSubtaskTitle = ''
+  }
+
+  const updateIssueSubtaskTitle = (subtask: IssueSubtask, value: string): void => {
+    const issueId = roomState.issueWorkspace.selectedIssueId
+    if (!issueId) {
+      return
+    }
+
+    send({
+      type: 'update_issue_subtask',
+      issueId,
+      subtaskId: subtask.id,
+      title: normalizeEditorText(value, 240),
+    })
+  }
+
+  const updateIssueSubtaskDescription = (subtask: IssueSubtask, value: string): void => {
+    const issueId = roomState.issueWorkspace.selectedIssueId
+    if (!issueId) {
+      return
+    }
+
+    send({
+      type: 'update_issue_subtask',
+      issueId,
+      subtaskId: subtask.id,
+      description: normalizeEditorText(value),
+    })
+  }
+
+  const toggleIssueSubtaskDone = (subtask: IssueSubtask, done: boolean): void => {
+    const issueId = roomState.issueWorkspace.selectedIssueId
+    if (!issueId) {
+      return
+    }
+
+    send({
+      type: 'update_issue_subtask',
+      issueId,
+      subtaskId: subtask.id,
+      done,
+    })
+  }
+
+  const removeIssueSubtask = (subtask: IssueSubtask): void => {
+    const issueId = roomState.issueWorkspace.selectedIssueId
+    if (!issueId) {
+      return
+    }
+
+    send({
+      type: 'remove_issue_subtask',
+      issueId,
+      subtaskId: subtask.id,
+    })
+  }
+
+  const normalizeJiraConfig = (): JiraConfig => ({
+    baseUrl: jiraConfig.baseUrl.trim(),
+    email: jiraConfig.email.trim(),
+    apiToken: jiraConfig.apiToken.trim(),
+    ticketPrefix: normalizeTicketPrefix(jiraConfig.ticketPrefix),
+  })
+
+  const loadJiraIssues = async (): Promise<void> => {
+    const normalized = normalizeJiraConfig()
+    jiraConfig = normalized
+    saveJiraConfigLocally()
+
+    if (!normalized.baseUrl || !normalized.email || !normalized.apiToken || !normalized.ticketPrefix) {
+      jiraError = 'Add Jira URL, email, API token, and ticket prefix first.'
+      jiraMessage = ''
+      jiraIssues = null
+      return
+    }
+
+    const requestId = ++jiraRequestCounter
+    isJiraLoading = true
+    jiraError = ''
+    jiraMessage = ''
+
+    try {
+      const response = await fetch(`${apiBaseUrl()}/api/jira/issues`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(normalized),
+      })
+
+      const payload = (await response.json().catch(() => null)) as unknown
+      if (requestId !== jiraRequestCounter) {
+        return
+      }
+
+      if (!response.ok) {
+        const message = isRecord(payload) && typeof payload.message === 'string' ? payload.message : 'Failed to load Jira tickets.'
+        jiraError = message
+        jiraMessage = ''
+        jiraIssues = null
+        return
+      }
+
+      const result = parseJiraIssueResult(payload)
+      if (!result) {
+        jiraError = 'Received an unexpected Jira response.'
+        jiraMessage = ''
+        jiraIssues = null
+        return
+      }
+
+      jiraIssues = result
+      jiraError = ''
+      const total = result.groups.reduce((count, group) => count + group.issues.length, 0)
+      jiraMessage =
+        total > 0
+          ? `Loaded ${total} tickets grouped into ${result.groups.length} sprint buckets.`
+          : 'No Jira tickets found for current/future sprints or backlog.'
+    } catch {
+      if (requestId !== jiraRequestCounter) {
+        return
+      }
+
+      jiraError = 'Could not reach the backend Jira endpoint.'
+      jiraMessage = ''
+      jiraIssues = null
+    } finally {
+      if (requestId === jiraRequestCounter) {
+        isJiraLoading = false
+      }
+    }
+  }
+
+  const clearJiraConfig = (): void => {
+    jiraConfig = createDefaultJiraConfig()
+    jiraIssues = null
+    jiraError = ''
+    jiraMessage = ''
+    window.localStorage.removeItem(JIRA_STORAGE_KEY)
+  }
+
+  const handleJiraConfigInput = (): void => {
+    jiraConfig.ticketPrefix = normalizeTicketPrefix(jiraConfig.ticketPrefix)
+    saveJiraConfigLocally()
   }
 
   const commitProfileName = (showError: boolean): void => {
@@ -259,8 +777,14 @@
 
   onMount(() => {
     const hasStoredName = readStoredName()
+    const hasStoredJiraConnection = readStoredJiraConfig()
+
     if (hasStoredName) {
       connect()
+    }
+
+    if (hasStoredJiraConnection) {
+      void loadJiraIssues()
     }
   })
 
@@ -278,6 +802,25 @@
     estimate,
     voters: roomState.participants.filter((participant) => participant.vote === estimate),
   })).filter((bucket) => bucket.voters.length > 0)
+  $: selectedIssueId = roomState.issueWorkspace.selectedIssueId
+  $: selectedIssueDraft = selectedIssueId
+    ? roomState.issueWorkspace.drafts.find((draft) => draft.issueId === selectedIssueId) ?? null
+    : null
+  $: selectedIssueFromJira = selectedIssueId && jiraIssues
+    ? jiraIssues.groups.flatMap((group) => group.issues).find((issue) => issue.id === selectedIssueId) ?? null
+    : null
+  $: selectedIssueKey = selectedIssueDraft?.issueKey || selectedIssueFromJira?.key || ''
+  $: selectedIssueUrl = selectedIssueDraft?.issueUrl || selectedIssueFromJira?.url || ''
+  $: selectedIssueSummary = getFieldValue(selectedIssueDraft, 'summary') || selectedIssueFromJira?.summary || '(no summary)'
+  $: selectedIssueStatus = getFieldValue(selectedIssueDraft, 'status') || selectedIssueFromJira?.status || 'Unknown'
+  $: selectedIssuePriority = getFieldValue(selectedIssueDraft, 'priority') || selectedIssueFromJira?.priority || 'Unspecified'
+  $: selectedIssueAssignee = getFieldValue(selectedIssueDraft, 'assignee') || selectedIssueFromJira?.assignee || 'Unassigned'
+  $: selectedIssueType = getFieldValue(selectedIssueDraft, 'issue_type') || selectedIssueFromJira?.issueType || 'Issue'
+  $: selectedIssueReporter = getFieldValue(selectedIssueDraft, 'reporter') || selectedIssueFromJira?.reporter || 'Unknown'
+  $: selectedIssueUpdatedAt = selectedIssueDraft ? formatTimestamp(selectedIssueDraft.updatedAt) : ''
+  $: selectedIssueUpdatedBy = selectedIssueDraft?.updatedBy
+    ? roomState.participants.find((participant) => participant.id === selectedIssueDraft.updatedBy)?.name ?? 'Someone'
+    : ''
 </script>
 
 <main class="app-shell" class:connected={isConnected}>
@@ -326,11 +869,119 @@
     </section>
   {:else}
     <section class="workspace">
-      <section class="panel summary">
+      <section class="panel summary issue-editor">
         <div class="panel-heading">
-          <h2>Current ticket</h2>
+          <h2>Ticket Workspace</h2>
           <p>{votedCount} of {totalCount} participants have voted.</p>
         </div>
+
+        {#if selectedIssueId}
+          <div class="issue-header">
+            <div>
+              <strong>{selectedIssueKey}</strong>
+              <p>{selectedIssueSummary}</p>
+            </div>
+            {#if selectedIssueUrl}
+              <a href={selectedIssueUrl} target="_blank" rel="noreferrer">Open in Jira</a>
+            {/if}
+          </div>
+
+          <div class="issue-meta">
+            <span>{selectedIssueType}</span>
+            <span>Status: {selectedIssueStatus}</span>
+            <span>Priority: {selectedIssuePriority}</span>
+            <span>Assignee: {selectedIssueAssignee}</span>
+            <span>Reporter: {selectedIssueReporter}</span>
+          </div>
+
+          {#if selectedIssueDraft}
+            <div class="issue-fields">
+              {#each selectedIssueDraft.fields as field (field.id)}
+                <label for={`issue-field-${field.id}`}>{field.label}</label>
+                <textarea
+                  id={`issue-field-${field.id}`}
+                  rows={field.id === 'description' ? 6 : 3}
+                  value={field.value}
+                  on:input={(event) => setIssueField(field, (event.currentTarget as HTMLTextAreaElement).value)}
+                ></textarea>
+              {/each}
+            </div>
+          {:else}
+            <p class="jira-empty">Issue details are loading into the shared workspace.</p>
+          {/if}
+
+          <section class="subtasks">
+            <div class="subtasks-header">
+              <h3>Subtasks</h3>
+              <div class="subtask-add">
+                <input
+                  value={newSubtaskTitle}
+                  placeholder="Add subtask title"
+                  on:input={(event) => (newSubtaskTitle = (event.currentTarget as HTMLInputElement).value)}
+                  on:keydown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      addIssueSubtask()
+                    }
+                  }}
+                />
+                <button type="button" class="secondary" on:click={addIssueSubtask}>Add</button>
+              </div>
+            </div>
+
+            {#if selectedIssueDraft && selectedIssueDraft.subtasks.length > 0}
+              <ul class="subtask-list">
+                {#each selectedIssueDraft.subtasks as subtask (subtask.id)}
+                  <li>
+                    <div class="subtask-row">
+                      <label class="subtask-done-toggle">
+                        <input
+                          type="checkbox"
+                          checked={subtask.done}
+                          on:change={(event) =>
+                            toggleIssueSubtaskDone(subtask, (event.currentTarget as HTMLInputElement).checked)}
+                        />
+                        Done
+                      </label>
+                      <button type="button" class="text-button compact" on:click={() => removeIssueSubtask(subtask)}>
+                        Remove
+                      </button>
+                    </div>
+
+                    <input
+                      value={subtask.title}
+                      placeholder="Subtask title"
+                      on:input={(event) => updateIssueSubtaskTitle(subtask, (event.currentTarget as HTMLInputElement).value)}
+                    />
+
+                    <textarea
+                      rows="3"
+                      value={subtask.description}
+                      placeholder="Subtask description"
+                      on:input={(event) =>
+                        updateIssueSubtaskDescription(subtask, (event.currentTarget as HTMLTextAreaElement).value)}
+                    ></textarea>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="jira-empty">No subtasks yet. Add one to break the work down.</p>
+            {/if}
+          </section>
+
+          {#if selectedIssueUpdatedAt}
+            <p class="issue-update-meta">
+              Last update {selectedIssueUpdatedAt}
+              {#if selectedIssueUpdatedBy}
+                {' by ' + selectedIssueUpdatedBy}
+              {/if}
+              .
+            </p>
+          {/if}
+        {:else}
+          <p>Select an issue from the Jira list to open the shared ticket editor.</p>
+        {/if}
+
         <p>
           {#if roomState.revealed}
             Votes are revealed and remain editable until someone selects <strong>Next ticket</strong>.
@@ -386,6 +1037,103 @@
             </li>
           {/each}
         </ul>
+      </section>
+
+      <section class="panel jira-panel">
+        <div class="panel-heading">
+          <h2>Jira Tickets</h2>
+          <button type="button" class="secondary" on:click={() => void loadJiraIssues()} disabled={isJiraLoading}>
+            {isJiraLoading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
+
+        <form class="jira-form" on:submit|preventDefault={() => void loadJiraIssues()}>
+          <label for="jira-url">Jira URL</label>
+          <input
+            id="jira-url"
+            placeholder="your-team.atlassian.net"
+            bind:value={jiraConfig.baseUrl}
+            on:input={handleJiraConfigInput}
+          />
+
+          <label for="jira-email">Jira account email</label>
+          <input
+            id="jira-email"
+            type="email"
+            placeholder="team.member@company.com"
+            bind:value={jiraConfig.email}
+            on:input={handleJiraConfigInput}
+          />
+
+          <label for="jira-token">Jira API token</label>
+          <input
+            id="jira-token"
+            type="password"
+            placeholder="Paste API token"
+            bind:value={jiraConfig.apiToken}
+            on:input={handleJiraConfigInput}
+          />
+
+          <label for="jira-ticket-prefix">Ticket prefix</label>
+          <input
+            id="jira-ticket-prefix"
+            placeholder="TEAM"
+            bind:value={jiraConfig.ticketPrefix}
+            on:input={handleJiraConfigInput}
+          />
+
+          <div class="jira-actions">
+            <button type="submit" class="secondary" disabled={isJiraLoading}>
+              {isJiraLoading ? 'Loading...' : 'Load tickets'}
+            </button>
+            <button type="button" class="text-button" on:click={clearJiraConfig}>Clear</button>
+          </div>
+        </form>
+
+        {#if jiraError}
+          <p class="jira-error">{jiraError}</p>
+        {:else if jiraMessage}
+          <p class="jira-message">{jiraMessage}</p>
+        {/if}
+
+        {#if jiraIssues}
+          {#if jiraIssues.groups.length > 0}
+            <div class="jira-buckets">
+              {#each jiraIssues.groups as group (group.id)}
+                <article class="jira-bucket">
+                  <h3>
+                    {group.name}
+                    <span>{jiraCategoryLabel(group.category)} - {formatJiraIssueCount(group.issues.length)}</span>
+                  </h3>
+                  <ul class="jira-list">
+                    {#each group.issues as issue}
+                      <li class:selected={selectedIssueId === issue.id}>
+                        <button type="button" class="jira-issue-select" on:click={() => selectIssue(issue, group)}>
+                          <strong>{issue.key}</strong>
+                          <p>{issue.summary}</p>
+                          <small>
+                            <span>{issue.status}</span>
+                            {#if issue.priority}
+                              <span> - {issue.priority}</span>
+                            {/if}
+                            {#if issue.assignee}
+                              <span> - {issue.assignee}</span>
+                            {/if}
+                          </small>
+                        </button>
+                        <a href={issue.url} target="_blank" rel="noreferrer">Open</a>
+                      </li>
+                    {/each}
+                  </ul>
+                </article>
+              {/each}
+            </div>
+          {:else}
+            <p class="jira-empty">No Jira tickets found for current/future sprints or backlog.</p>
+          {/if}
+        {:else}
+          <p class="jira-empty">No Jira tickets loaded yet.</p>
+        {/if}
       </section>
     </section>
 

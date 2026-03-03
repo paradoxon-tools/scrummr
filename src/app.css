@@ -25,7 +25,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -47,12 +48,19 @@ button:disabled {
   cursor: not-allowed;
 }
 
-input {
+input,
+textarea {
   border: 1px solid #a4b0c5;
   border-radius: 10px;
   background: #ffffff;
   color: inherit;
   padding: 0.62rem 0.74rem;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 4.2rem;
+  line-height: 1.38;
 }
 
 .app-shell {
@@ -182,6 +190,20 @@ input {
   background: linear-gradient(135deg, #106b5f 0%, #208653 100%);
 }
 
+.secondary {
+  color: #0f2a4b;
+  background: linear-gradient(135deg, #dbe9ff 0%, #cce3fc 100%);
+  border: 1px solid #b8cee8;
+  padding: 0.6rem 0.78rem;
+}
+
+.text-button {
+  color: #4c5f7e;
+  background: transparent;
+  border: 1px dashed #b8c5db;
+  padding: 0.6rem 0.78rem;
+}
+
 .panel-heading {
   display: flex;
   flex-wrap: wrap;
@@ -192,7 +214,8 @@ input {
 
 .panel-heading h2,
 .participants h2,
-.breakdown h2 {
+.breakdown h2,
+.jira-panel h2 {
   margin: 0;
 }
 
@@ -204,10 +227,142 @@ input {
 
 .summary {
   grid-column: 1;
+  grid-row: 1;
+}
+
+.issue-editor {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.issue-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.issue-header strong {
+  color: #1a4f8a;
+}
+
+.issue-header p {
+  margin: 0.25rem 0 0;
+  color: #203654;
+}
+
+.issue-header a {
+  color: #1a4f8a;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.issue-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.issue-meta span {
+  border: 1px solid #cfe0f7;
+  border-radius: 999px;
+  background: #f3f8ff;
+  color: #2a3f5f;
+  padding: 0.2rem 0.48rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.issue-fields {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.issue-fields label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #455a7c;
+}
+
+.subtasks {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.subtasks-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.subtasks-header h3 {
+  margin: 0;
+}
+
+.subtask-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.subtask-add input {
+  min-width: 220px;
+}
+
+.subtask-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.subtask-list li {
+  border: 1px solid #d2deef;
+  border-radius: 12px;
+  padding: 0.6rem;
+  background: #f8fbff;
+  display: grid;
+  gap: 0.42rem;
+}
+
+.subtask-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.subtask-done-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.84rem;
+  color: #2f4566;
+}
+
+.subtask-done-toggle input {
+  margin: 0;
+}
+
+.text-button.compact {
+  padding: 0.34rem 0.52rem;
+}
+
+.issue-update-meta {
+  margin: 0;
+  color: #506282;
+  font-size: 0.82rem;
 }
 
 .breakdown {
   grid-column: 1;
+  grid-row: 2;
 }
 
 .breakdown-grid {
@@ -287,6 +442,129 @@ input {
   color: #5d6880;
 }
 
+.jira-panel {
+  grid-column: 1 / -1;
+  grid-row: 3;
+}
+
+.jira-form {
+  margin-top: 0.8rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.jira-form label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #455a7c;
+}
+
+.jira-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.jira-error,
+.jira-message,
+.jira-empty {
+  margin: 0.8rem 0 0;
+}
+
+.jira-error {
+  color: #8c2a2a;
+  font-weight: 700;
+}
+
+.jira-message,
+.jira-empty {
+  color: #4f6182;
+}
+
+.jira-buckets {
+  margin-top: 0.8rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.jira-bucket {
+  border: 1px solid #cddbf0;
+  border-radius: 14px;
+  padding: 0.65rem;
+  background: #f6faff;
+}
+
+.jira-bucket h3 {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 1rem;
+}
+
+.jira-bucket h3 span {
+  color: #4d6282;
+  font-weight: 600;
+}
+
+.jira-list {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.jira-list li {
+  border: 1px solid #d2deef;
+  border-radius: 12px;
+  padding: 0.6rem 0.7rem;
+  background: #f8fbff;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: start;
+}
+
+.jira-list li.selected {
+  border-color: #7fa8d9;
+  background: #edf5ff;
+}
+
+.jira-issue-select {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  font-weight: 500;
+}
+
+.jira-issue-select strong {
+  color: #1a4f8a;
+  font-weight: 700;
+}
+
+.jira-issue-select p {
+  margin: 0.35rem 0 0;
+}
+
+.jira-issue-select small {
+  display: block;
+  margin-top: 0.3rem;
+  color: #536683;
+}
+
+.jira-list li > a {
+  align-self: start;
+  color: #1a4f8a;
+  font-weight: 700;
+  text-decoration: none;
+  font-size: 0.84rem;
+}
+
 .vote-dock {
   position: fixed;
   left: 0;
@@ -359,7 +637,8 @@ input {
 
   .summary,
   .breakdown,
-  .participants {
+  .participants,
+  .jira-panel {
     grid-column: 1;
     grid-row: auto;
   }
@@ -400,5 +679,14 @@ input {
   .vote-card {
     min-height: 56px;
     font-size: 1.1rem;
+  }
+
+  .subtask-add {
+    width: 100%;
+  }
+
+  .subtask-add input {
+    width: 100%;
+    min-width: 0;
   }
 }
