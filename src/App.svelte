@@ -1225,24 +1225,6 @@
                     />
                   {:else}
                     <span>{participant.name}</span>
-                    <button
-                      type="button"
-                      class="edit-name-button"
-                      aria-label="Edit your display name"
-                      title="Edit your display name"
-                      on:click={startInlineProfileEdit}
-                    >
-                      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                        <path
-                          d="M11.7 1.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-8.2 8.2-3.8.9.9-3.8zM2.5 14.5h11"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.4"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        ></path>
-                      </svg>
-                    </button>
                   {/if}
                 {:else}
                   <span class="avatar-dot" aria-hidden="true"></span>
@@ -1250,11 +1232,34 @@
                 {/if}
               </div>
 
-              {#if roomState.revealed}
-                <strong>{participant.vote ?? '-'}</strong>
-              {:else}
-                <em>{participant.hasVoted ? 'Voted' : 'Waiting'}</em>
-              {/if}
+              <div class="participant-controls">
+                {#if roomState.revealed}
+                  <strong>{participant.vote ?? '-'}</strong>
+                {:else}
+                  <em>{participant.hasVoted ? 'Voted' : 'Waiting'}</em>
+                {/if}
+
+                {#if participant.id === roomState.myId && !isProfileEditing}
+                  <button
+                    type="button"
+                    class="edit-name-button"
+                    aria-label="Edit your display name"
+                    title="Edit your display name"
+                    on:click={startInlineProfileEdit}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                      <path
+                        d="M11.7 1.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-8.2 8.2-3.8.9.9-3.8zM2.5 14.5h11"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      ></path>
+                    </svg>
+                  </button>
+                {/if}
+              </div>
             </li>
           {/each}
         </ul>

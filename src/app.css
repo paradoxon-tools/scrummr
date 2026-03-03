@@ -549,6 +549,12 @@ input.busy {
   min-width: 0;
 }
 
+.participant-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
 .person span {
   overflow: hidden;
   text-overflow: ellipsis;
