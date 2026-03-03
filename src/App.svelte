@@ -1318,11 +1318,6 @@
       </section>
 
       <section class="jira-panel">
-        <div class="brand connected-brand">
-          <p class="eyebrow">Single Room Scrum Poker</p>
-          <h1>Scrummer</h1>
-        </div>
-
         <div class="panel-heading">
           <h2>Jira Tickets</h2>
           <div class="jira-panel-actions">
