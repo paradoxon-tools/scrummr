@@ -1159,7 +1159,10 @@
             </p>
           {/if}
         {:else}
-          <p>Select an issue from the Jira list to open the shared ticket editor.</p>
+          <div class="ticket-placeholder">
+            <h3>No ticket selected</h3>
+            <p>Pick a ticket from the left list to open it in the shared workspace.</p>
+          </div>
         {/if}
 
         <p>
@@ -1189,7 +1192,7 @@
         </section>
       {/if}
 
-      <section class="panel participants">
+      <section class="participants">
         <h2>Participants</h2>
         <ul>
           {#each roomState.participants as participant}
