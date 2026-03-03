@@ -81,7 +81,7 @@ textarea {
   --left-column-width: clamp(260px, 24vw, 360px);
   --right-column-width: clamp(160px, 16vw, 240px);
   --workspace-column-gap: 1rem;
-  --column-top-offset: 5.35rem;
+  --column-top-offset: 6.15rem;
   position: relative;
   display: block;
   overflow: hidden;
@@ -93,6 +93,7 @@ textarea {
   top: 0;
   left: 0;
   width: var(--left-column-width);
+  padding: 0.45rem 0 0.35rem 0.15rem;
   z-index: 4;
   pointer-events: none;
 }

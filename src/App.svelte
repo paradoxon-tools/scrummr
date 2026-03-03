@@ -1013,7 +1013,7 @@
 <main class="app-shell" class:connected={isConnected} on:wheel|capture|nonpassive={handleAppWheel}>
   <header class="topbar">
     <div class="brand">
-      <p class="eyebrow">Single Room Scrum Poker</p>
+      <p class="eyebrow">Dericon Scrum Poker</p>
       <h1>Scrummer</h1>
     </div>
   </header>
