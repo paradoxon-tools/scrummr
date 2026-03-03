@@ -1222,7 +1222,7 @@
         </ul>
       </section>
 
-      <section class="panel jira-panel">
+      <section class="jira-panel">
         <div class="panel-heading">
           <h2>Jira Tickets</h2>
           <div class="jira-panel-actions">
@@ -1292,35 +1292,37 @@
           <p class="jira-message">{jiraMessage}</p>
         {/if}
 
-        {#if jiraIssues}
-          {#if jiraIssues.groups.length > 0}
-            <div class="jira-buckets">
-              {#each jiraIssues.groups as group (group.id)}
-                <article class="jira-bucket">
-                  <h3>
-                    {group.name}
-                    <span>{jiraCategoryLabel(group.category)} - {formatJiraIssueCount(group.issues.length)}</span>
-                  </h3>
-                  <ul class="jira-list">
-                    {#each group.issues as issue}
-                      <li class:selected={selectedIssueId === issue.id}>
-                        <button type="button" class="jira-issue-select" on:click={() => selectIssue(issue, group)}>
-                          <strong>{issue.key}</strong>
-                          <p>{issue.summary}</p>
-                          <small>[{issue.status}]</small>
-                        </button>
-                      </li>
-                    {/each}
-                  </ul>
-                </article>
-              {/each}
-            </div>
+        <div class="jira-list-scroll">
+          {#if jiraIssues}
+            {#if jiraIssues.groups.length > 0}
+              <div class="jira-buckets">
+                {#each jiraIssues.groups as group (group.id)}
+                  <article class="jira-bucket">
+                    <h3>
+                      {group.name}
+                      <span>{jiraCategoryLabel(group.category)} - {formatJiraIssueCount(group.issues.length)}</span>
+                    </h3>
+                    <ul class="jira-list">
+                      {#each group.issues as issue}
+                        <li class:selected={selectedIssueId === issue.id}>
+                          <button type="button" class="jira-issue-select" on:click={() => selectIssue(issue, group)}>
+                            <strong>{issue.key}</strong>
+                            <p>{issue.summary}</p>
+                            <small>[{issue.status}]</small>
+                          </button>
+                        </li>
+                      {/each}
+                    </ul>
+                  </article>
+                {/each}
+              </div>
+            {:else}
+              <p class="jira-empty">No Jira tickets found for current/future sprints or backlog.</p>
+            {/if}
           {:else}
-            <p class="jira-empty">No Jira tickets found for current/future sprints or backlog.</p>
+            <p class="jira-empty">No Jira tickets loaded yet.</p>
           {/if}
-        {:else}
-          <p class="jira-empty">No Jira tickets loaded yet.</p>
-        {/if}
+        </div>
       </section>
     </section>
 
