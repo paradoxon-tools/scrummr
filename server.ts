@@ -54,7 +54,7 @@ const issueUrlMaxLength = 600
 const subtaskTitleMaxLength = 240
 const subtaskDescriptionMaxLength = 16000
 const maxSubtasksPerIssue = 100
-const maxIssueFieldsPerDraft = 64
+const maxIssueFieldsPerDraft = 256
 const issuePresenceTargetIdMaxLength = 120
 
 let revealed = false
@@ -63,6 +63,7 @@ let selectedIssueId: string | null = null
 const issueDrafts = new Map<string, IssueDraftSnapshot>()
 const issuePresenceByIssue = new Map<string, Map<string, Set<string>>>()
 let sharedJiraIssues: JiraIssueResult | null = null
+const estimatedIssueIds = new Set<string>()
 
 const hueDistance = (a: number, b: number): number => {
   const diff = Math.abs(a - b) % 360
@@ -763,6 +764,7 @@ const mapJiraIssues = (
         createdAt: typeof fields.created === 'string' ? fields.created : null,
         updatedAt: typeof fields.updated === 'string' ? fields.updated : null,
         url: `${jiraOrigin}/browse/${encodeURIComponent(key)}`,
+        isEstimated: false,
         fields: buildJiraEditorFields(fields, fieldNamesById, normalizedStatus),
         sprint: parseIssueSprint(sprintField, preferredSprintState),
       }
@@ -860,8 +862,112 @@ const withoutSprint = (issue: JiraIssueWithSprint): JiraIssue => ({
   createdAt: issue.createdAt,
   updatedAt: issue.updatedAt,
   url: issue.url,
+  isEstimated: issue.isEstimated,
   fields: issue.fields.map((field) => ({ ...field })),
 })
+
+type SharedIssueEntry = {
+  issue: JiraIssue
+  group: JiraIssueGroup
+}
+
+const flattenSharedIssueEntries = (): SharedIssueEntry[] => {
+  if (!sharedJiraIssues) {
+    return []
+  }
+
+  const entries: SharedIssueEntry[] = []
+  for (const group of sharedJiraIssues.groups) {
+    for (const issue of group.issues) {
+      entries.push({ issue, group })
+    }
+  }
+
+  return entries
+}
+
+const buildWorkspaceSeedFields = (issue: JiraIssue, group: JiraIssueGroup): IssueEditorField[] =>
+  normalizeIssueEditorFields([
+    ...issue.fields,
+    {
+      id: 'sprint',
+      label: 'Sprint',
+      value: group.sprint?.name ?? group.name,
+    },
+    {
+      id: 'planning_notes',
+      label: 'Planning Notes',
+      value: '',
+    },
+  ])
+
+const ensureSelectedIssueFromShared = (issueId: string, updatedBy: string | null): boolean => {
+  const normalizedIssueId = normalizeIssueId(issueId)
+  if (!normalizedIssueId) {
+    return false
+  }
+
+  const entry = flattenSharedIssueEntries().find((candidate) => candidate.issue.id === normalizedIssueId)
+  if (!entry) {
+    return false
+  }
+
+  ensureIssueDraft(
+    normalizedIssueId,
+    normalizeIssueKey(entry.issue.key),
+    normalizeIssueUrl(entry.issue.url),
+    buildWorkspaceSeedFields(entry.issue, entry.group),
+    updatedBy,
+  )
+  selectedIssueId = normalizedIssueId
+  return true
+}
+
+const selectFirstSharedIssue = (): void => {
+  const entries = flattenSharedIssueEntries()
+  if (entries.length === 0) {
+    selectedIssueId = null
+    return
+  }
+
+  void ensureSelectedIssueFromShared(entries[0].issue.id, null)
+}
+
+const selectNextSharedIssue = (): void => {
+  const entries = flattenSharedIssueEntries()
+  if (entries.length === 0) {
+    selectedIssueId = null
+    return
+  }
+
+  const currentIndex = selectedIssueId ? entries.findIndex((entry) => entry.issue.id === selectedIssueId) : -1
+  const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % entries.length : 0
+  void ensureSelectedIssueFromShared(entries[nextIndex].issue.id, null)
+}
+
+const applyEstimatedFlags = (result: JiraIssueResult): void => {
+  for (const group of result.groups) {
+    for (const issue of group.issues) {
+      issue.isEstimated = estimatedIssueIds.has(issue.id)
+    }
+  }
+}
+
+const markIssueEstimated = (issueId: string | null): void => {
+  if (!issueId) {
+    return
+  }
+
+  const normalizedIssueId = normalizeIssueId(issueId)
+  if (!normalizedIssueId) {
+    return
+  }
+
+  estimatedIssueIds.add(normalizedIssueId)
+  if (sharedJiraIssues) {
+    applyEstimatedFlags(sharedJiraIssues)
+  }
+}
 
 const toDateMs = (value: string | null): number => {
   if (!value) {
@@ -1113,6 +1219,8 @@ const fetchJiraIssues = async (request: Request): Promise<JiraIssueResult | Resp
     groups,
   }
 
+  applyEstimatedFlags(response)
+
   return response
 }
 
@@ -1218,6 +1326,9 @@ const server = Bun.serve<SocketData>({
       }
 
       sharedJiraIssues = jiraIssues
+      if (!selectedIssueId || !ensureSelectedIssueFromShared(selectedIssueId, null)) {
+        selectFirstSharedIssue()
+      }
       broadcastSnapshots()
       return jsonResponse(200, jiraIssues)
     }
@@ -1505,7 +1616,13 @@ const server = Bun.serve<SocketData>({
             return
           }
 
+          const hasAnyVote = [...users.values()].some((user) => user.vote !== null)
+          if (hasAnyVote) {
+            markIssueEstimated(selectedIssueId)
+          }
+
           resetRound()
+          selectNextSharedIssue()
           broadcastSnapshots()
           return
         }
@@ -1522,6 +1639,7 @@ const server = Bun.serve<SocketData>({
         issueDrafts.clear()
         issuePresenceByIssue.clear()
         sharedJiraIssues = null
+        estimatedIssueIds.clear()
       }
 
       broadcastSnapshots()

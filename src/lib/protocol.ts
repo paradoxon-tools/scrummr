@@ -21,6 +21,7 @@ export type JiraIssue = {
   createdAt: string | null
   updatedAt: string | null
   url: string
+  isEstimated: boolean
   fields: JiraIssueField[]
 }
 

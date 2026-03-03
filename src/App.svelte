@@ -231,6 +231,7 @@
         createdAt: typeof issue.createdAt === 'string' ? issue.createdAt : null,
         updatedAt: typeof issue.updatedAt === 'string' ? issue.updatedAt : null,
         url: toStringOrEmpty(issue.url),
+        isEstimated: issue.isEstimated === true,
         fields: parseJiraIssueFields(issue.fields),
       }))
       .filter((issue) => issue.id !== '' && issue.key !== '' && issue.summary !== '')
@@ -1382,9 +1383,14 @@
                       {#each group.issues as issue}
                         <li class:selected={selectedIssueId === issue.id}>
                           <button type="button" class="jira-issue-select" on:click={() => selectIssue(issue, group)}>
-                            <strong>{issue.key}</strong>
+                            <div class="jira-issue-head">
+                              <strong>{issue.key}</strong>
+                              <span class="status-badge">{issue.status}</span>
+                              {#if issue.isEstimated}
+                                <span class="estimated-badge">Estimated</span>
+                              {/if}
+                            </div>
                             <p>{issue.summary}</p>
-                            <small>[{issue.status}]</small>
                           </button>
                         </li>
                       {/each}

@@ -18,10 +18,14 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 #app {
   min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 button,
@@ -65,6 +69,7 @@ textarea {
 
 .app-shell {
   min-height: 100vh;
+  height: 100vh;
   padding: 1rem;
   display: grid;
   grid-template-rows: auto 1fr;
@@ -159,6 +164,7 @@ textarea {
   gap: 1rem;
   grid-template-columns: minmax(270px, 1fr) minmax(0, 1.75fr) minmax(140px, 0.5fr);
   align-content: start;
+  min-height: 0;
 }
 
 .panel {
@@ -245,6 +251,7 @@ textarea {
 .summary {
   grid-column: 2;
   grid-row: 1;
+  min-height: 0;
 }
 
 .ticket-placeholder {
@@ -271,6 +278,10 @@ textarea {
 .issue-editor {
   display: grid;
   gap: 0.8rem;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .issue-header {
@@ -607,8 +618,8 @@ input.busy {
 
 .participant-action-button {
   width: 100%;
-  min-height: 2rem;
-  padding: 0.35rem 0.45rem;
+  min-height: 2.4rem;
+  padding: 0.45rem 0.5rem;
   font-size: 0.78rem;
 }
 
@@ -619,12 +630,12 @@ input.busy {
 }
 
 .vote-card {
-  min-height: 2.2rem;
+  min-height: 3rem;
   font-size: 0.92rem;
   color: #17305a;
   background: #f0f6ff;
   border: 1px solid #bfd0ea;
-  padding: 0.26rem 0.2rem;
+  padding: 0.34rem 0.2rem;
 }
 
 .participant-vote-card {
@@ -645,6 +656,9 @@ input.busy {
   background: transparent;
   box-shadow: none;
   padding: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
 }
 
 .jira-form {
@@ -721,6 +735,11 @@ input.busy {
   gap: 0.3rem;
   font-size: 0.9rem;
   line-height: 1.2;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: linear-gradient(180deg, rgba(244, 250, 255, 0.98) 0%, rgba(244, 250, 255, 0.92) 100%);
+  padding: 0.18rem 0;
 }
 
 .jira-bucket h3 span {
@@ -739,9 +758,12 @@ input.busy {
 
 .jira-list-scroll {
   margin-top: 0.35rem;
-  max-height: min(66vh, calc(100vh - 230px));
-  overflow-y: auto;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   padding-right: 0.22rem;
+  mask-image: linear-gradient(180deg, #000 0%, #000 86%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 86%, transparent 100%);
 }
 
 .jira-list li {
@@ -777,6 +799,33 @@ input.busy {
   color: #1a4f8a;
   font-weight: 700;
   font-size: 0.86rem;
+}
+
+.jira-issue-head {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.status-badge,
+.estimated-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid #bfd0ea;
+  background: #edf4ff;
+  color: #3f587d;
+  padding: 0.04rem 0.34rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.estimated-badge {
+  border-color: #98c7a8;
+  background: #e9f8ef;
+  color: #2a7142;
 }
 
 .jira-issue-select p {
@@ -832,7 +881,7 @@ input.busy {
   }
 
   .vote-card {
-    min-height: 2rem;
+    min-height: 2.6rem;
     font-size: 0.86rem;
   }
 
