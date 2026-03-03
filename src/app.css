@@ -78,7 +78,12 @@ textarea {
 }
 
 .app-shell.connected {
-  padding-bottom: 1rem;
+  grid-template-rows: 1fr;
+  gap: 0;
+}
+
+.app-shell.connected .topbar {
+  display: none;
 }
 
 .topbar {
@@ -161,11 +166,14 @@ textarea {
 }
 
 .workspace {
-  position: relative;
+  display: grid;
+  grid-template-columns: var(--left-column-width) minmax(0, 1fr) var(--right-column-width);
+  gap: var(--workspace-column-gap);
   height: 100%;
   --left-column-width: clamp(260px, 24vw, 360px);
   --right-column-width: clamp(160px, 16vw, 240px);
   --workspace-column-gap: 1rem;
+  --middle-top-space: clamp(4.2rem, 5vw, 5rem);
   min-height: 0;
   overflow: hidden;
 }
@@ -256,14 +264,11 @@ textarea {
 }
 
 .middle-scroll {
-  position: absolute;
-  top: calc(-1 * var(--app-row-gap));
-  bottom: 0;
-  left: calc(var(--left-column-width) + var(--workspace-column-gap));
-  right: calc(var(--right-column-width) + var(--workspace-column-gap));
+  position: relative;
+  min-height: 0;
   overflow-y: auto;
-  padding-top: var(--app-row-gap);
-  padding-bottom: var(--app-row-gap);
+  padding-top: var(--middle-top-space);
+  padding-bottom: 1rem;
   padding-right: 0.35rem;
   scrollbar-gutter: stable;
 }
@@ -527,11 +532,8 @@ input.busy {
 }
 
 .participants {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--right-column-width);
+  position: relative;
+  min-height: 0;
   align-self: start;
   overflow: hidden;
   display: grid;
@@ -700,11 +702,8 @@ input.busy {
 }
 
 .jira-panel {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--left-column-width);
+  position: relative;
+  min-height: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -712,6 +711,14 @@ input.busy {
   min-height: 0;
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.connected-brand {
+  margin: 0 0 0.45rem;
+}
+
+.connected-brand h1 {
+  margin: 0.05rem 0 0;
 }
 
 .jira-form {
@@ -906,10 +913,19 @@ input.busy {
 }
 
 @media (max-width: 980px) {
+  .app-shell.connected {
+    grid-template-rows: auto 1fr;
+    gap: var(--app-row-gap);
+  }
+
+  .app-shell.connected .topbar {
+    display: flex;
+  }
+
   .workspace {
-    position: static;
+    --middle-top-space: 0;
     height: auto;
-    display: grid;
+    grid-template-columns: 1fr;
     gap: 0.75rem;
   }
 
@@ -917,17 +933,19 @@ input.busy {
   .participants,
   .jira-panel {
     position: static;
-    left: auto;
-    right: auto;
-    top: auto;
-    bottom: auto;
-    width: auto;
+    min-height: 0;
     overflow: visible;
     height: auto;
   }
 
   .middle-scroll {
+    padding-top: 0;
+    padding-bottom: 0;
     padding-right: 0;
+  }
+
+  .connected-brand {
+    display: none;
   }
 }
 
