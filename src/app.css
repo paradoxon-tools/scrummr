@@ -607,7 +607,7 @@ input.busy {
   padding: 0.28rem 0.1rem;
   background: transparent;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.4rem;
   align-items: center;
 }
@@ -648,15 +648,6 @@ input.busy {
   color: #536683;
   font-size: 0.74rem;
   line-height: 1.2;
-}
-
-.jira-list li > a {
-  align-self: center;
-  color: #1a4f8a;
-  font-weight: 700;
-  text-decoration: none;
-  font-size: 0.74rem;
-  line-height: 1;
 }
 
 .vote-dock {

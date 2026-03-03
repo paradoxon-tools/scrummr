@@ -1304,7 +1304,6 @@
                           <p>{issue.summary}</p>
                           <small>[{issue.status}]</small>
                         </button>
-                        <a href={issue.url} target="_blank" rel="noreferrer">Open</a>
                       </li>
                     {/each}
                   </ul>
