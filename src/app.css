@@ -273,11 +273,11 @@ textarea {
   top: 0;
   bottom: 0;
   left: calc(var(--left-column-width) + var(--workspace-column-gap));
-  right: calc(var(--right-column-width) + var(--workspace-column-gap));
+  right: 0;
   overflow-y: auto;
   padding-top: var(--column-top-offset);
   padding-bottom: var(--app-row-gap);
-  padding-right: 0.35rem;
+  padding-right: calc(var(--right-column-width) + var(--workspace-column-gap) + 0.35rem);
   scrollbar-gutter: stable;
 }
 
@@ -550,6 +550,11 @@ input.busy {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   align-content: start;
+  pointer-events: none;
+}
+
+.participants > * {
+  pointer-events: auto;
 }
 
 .participants ul {
