@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, tick } from 'svelte'
   import {
     ESTIMATE_OPTIONS,
     type ClientEvent,
@@ -72,6 +72,7 @@
   let profileSyncTimer: number | undefined
   let jiraRequestCounter = 0
   let ticketWorkspaceElement: HTMLElement | null = null
+  let participantNameInputElement: HTMLInputElement | null = null
   let isRawTicketDataOpen = false
   let rawTicketDataIssueId: string | null = null
 
@@ -838,6 +839,13 @@
   }
 
   const handleProfileKeydown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      nameInput = joinedName
+      ;(event.currentTarget as HTMLInputElement).blur()
+      return
+    }
+
     if (event.key !== 'Enter') {
       return
     }
@@ -850,6 +858,20 @@
     window.clearTimeout(profileSyncTimer)
     commitProfileName(true)
     ;(event.currentTarget as HTMLInputElement).blur()
+  }
+
+  const startInlineProfileEdit = (): void => {
+    if (!isConnected) {
+      return
+    }
+
+    nameInput = joinedName
+    isProfileEditing = true
+    connectionMessage = ''
+  }
+
+  $: if (isProfileEditing) {
+    void tick().then(() => participantNameInputElement?.focus())
   }
 
   const setVote = (option: EstimateOption): void => {
@@ -968,39 +990,22 @@
       <p class="eyebrow">Single Room Scrum Poker</p>
       <h1>Scrummer</h1>
     </div>
-
-    <form class="profile" style={`--user-hue: ${myHue};`} on:submit|preventDefault>
-      <label for="display-name">Profile</label>
-      <div class="profile-input-wrap">
-        <button
-          type="button"
-          class="color-swatch"
-          aria-label="Get a new profile color"
-          title="Get a new color"
-          on:click={requestNewColor}
-          disabled={!isConnected}
-        ></button>
-        <input
-          id="display-name"
-          maxlength="40"
-          bind:value={nameInput}
-          placeholder="Your display name"
-          autocomplete="name"
-          on:focus={() => (isProfileEditing = true)}
-          on:blur={handleProfileBlur}
-          on:keydown={handleProfileKeydown}
-          on:input={handleNameInput}
-        />
-      </div>
-      <small>Saved automatically. Edit anytime; changes sync to the room when connected.</small>
-    </form>
   </header>
 
   {#if !isConnected}
     <section class="join-view panel">
       <h2>Join planning room</h2>
-      <p>Enter your name above and join. Returning users connect automatically.</p>
-      <form on:submit={submitJoin}>
+      <p>Enter your name and join. Returning users connect automatically.</p>
+      <form class="join-form" on:submit={submitJoin}>
+        <label for="join-display-name">Display name</label>
+        <input
+          id="join-display-name"
+          maxlength="40"
+          bind:value={nameInput}
+          placeholder="Your display name"
+          autocomplete="name"
+          on:input={handleNameInput}
+        />
         <button type="submit" class="primary" disabled={isConnecting}>
           {isConnecting ? 'Connecting...' : 'Join'}
         </button>
@@ -1206,10 +1211,43 @@
                     title="Get a new color"
                     on:click={requestNewColor}
                   ></button>
+                  {#if isProfileEditing}
+                    <input
+                      bind:this={participantNameInputElement}
+                      class="participant-name-input"
+                      maxlength="40"
+                      bind:value={nameInput}
+                      aria-label="Edit your display name"
+                      autocomplete="name"
+                      on:blur={handleProfileBlur}
+                      on:keydown={handleProfileKeydown}
+                      on:input={handleNameInput}
+                    />
+                  {:else}
+                    <span>{participant.name}</span>
+                    <button
+                      type="button"
+                      class="edit-name-button"
+                      aria-label="Edit your display name"
+                      title="Edit your display name"
+                      on:click={startInlineProfileEdit}
+                    >
+                      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <path
+                          d="M11.7 1.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-8.2 8.2-3.8.9.9-3.8zM2.5 14.5h11"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.4"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        ></path>
+                      </svg>
+                    </button>
+                  {/if}
                 {:else}
                   <span class="avatar-dot" aria-hidden="true"></span>
+                  <span>{participant.name}</span>
                 {/if}
-                <span>{participant.name}</span>
               </div>
 
               {#if roomState.revealed}
