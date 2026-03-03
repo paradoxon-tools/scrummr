@@ -73,6 +73,8 @@
   let profileSyncTimer: number | undefined
   let jiraRequestCounter = 0
   let ticketWorkspaceElement: HTMLElement | null = null
+  let middleScrollElement: HTMLElement | null = null
+  let jiraListScrollElement: HTMLElement | null = null
   let participantNameInputElement: HTMLInputElement | null = null
   let isRawTicketDataOpen = false
   let rawTicketDataIssueId: string | null = null
@@ -908,6 +910,20 @@
     send({ type: 'reroll_color' })
   }
 
+  const handleAppWheel = (event: WheelEvent): void => {
+    if (!isConnected || !middleScrollElement || event.ctrlKey) {
+      return
+    }
+
+    const target = event.target as Node | null
+    if (target && jiraListScrollElement?.contains(target)) {
+      return
+    }
+
+    event.preventDefault()
+    middleScrollElement.scrollBy({ top: event.deltaY })
+  }
+
   onMount(() => {
     const hasStoredName = readStoredName()
     const hasStoredJiraConnection = readStoredJiraConfig()
@@ -994,7 +1010,7 @@
     : ''
 </script>
 
-<main class="app-shell" class:connected={isConnected}>
+<main class="app-shell" class:connected={isConnected} on:wheel|nonpassive={handleAppWheel}>
   <header class="topbar">
     <div class="brand">
       <p class="eyebrow">Single Room Scrum Poker</p>
@@ -1023,7 +1039,7 @@
     </section>
   {:else}
     <section class="workspace">
-      <div class="middle-scroll">
+      <div class="middle-scroll" bind:this={middleScrollElement}>
         <section class="panel summary issue-editor" bind:this={ticketWorkspaceElement}>
           <div class="panel-heading">
             <h2>Ticket Workspace</h2>
@@ -1371,7 +1387,7 @@
           <p class="jira-message">{jiraMessage}</p>
         {/if}
 
-        <div class="jira-list-scroll">
+        <div class="jira-list-scroll" bind:this={jiraListScrollElement}>
           {#if jiraIssues}
             {#if jiraIssues.groups.length > 0}
               <div class="jira-buckets">

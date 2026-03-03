@@ -68,12 +68,13 @@ textarea {
 }
 
 .app-shell {
+  --app-row-gap: 1rem;
   min-height: 100vh;
   height: 100vh;
   padding: 1rem;
   display: grid;
   grid-template-rows: auto 1fr;
-  gap: 1rem;
+  gap: var(--app-row-gap);
 }
 
 .app-shell.connected {
@@ -255,11 +256,12 @@ textarea {
 
 .middle-scroll {
   position: absolute;
-  top: 0;
+  top: calc(-1 * var(--app-row-gap));
   bottom: 0;
   left: calc(var(--left-column-width) + var(--workspace-column-gap));
   right: calc(var(--right-column-width) + var(--workspace-column-gap));
   overflow-y: auto;
+  padding-top: var(--app-row-gap);
   padding-right: 0.35rem;
   scrollbar-gutter: stable;
 }
@@ -929,6 +931,7 @@ input.busy {
 
 @media (max-width: 620px) {
   .app-shell {
+    --app-row-gap: 0.75rem;
     padding: 0.75rem;
   }
 
