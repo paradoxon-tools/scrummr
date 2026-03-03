@@ -8,6 +8,7 @@
     type IssueEditorField,
     type IssueSubtask,
     type JiraIssue,
+    type JiraIssueField,
     type JiraIssueCategory,
     type JiraIssueGroup,
     type JiraIssueResult,
@@ -200,6 +201,21 @@
       return null
     }
 
+    const parseJiraIssueFields = (fieldPayload: unknown): JiraIssueField[] => {
+      if (!Array.isArray(fieldPayload)) {
+        return []
+      }
+
+      return fieldPayload
+        .filter((field): field is Record<string, unknown> => isRecord(field))
+        .map((field) => ({
+          id: toStringOrEmpty(field.id),
+          label: toStringOrEmpty(field.label),
+          value: toStringOrEmpty(field.value),
+        }))
+        .filter((field) => field.id !== '' && field.label !== '' && field.value !== '')
+    }
+
     return payload
       .filter((issue): issue is Record<string, unknown> => isRecord(issue))
       .map((issue) => ({
@@ -215,6 +231,7 @@
         createdAt: typeof issue.createdAt === 'string' ? issue.createdAt : null,
         updatedAt: typeof issue.updatedAt === 'string' ? issue.updatedAt : null,
         url: toStringOrEmpty(issue.url),
+        fields: parseJiraIssueFields(issue.fields),
       }))
       .filter((issue) => issue.id !== '' && issue.key !== '' && issue.summary !== '')
   }
@@ -323,13 +340,7 @@
 
   const buildIssueEditorFields = (issue: JiraIssue, sprintName: string): IssueEditorField[] => {
     const fields: IssueEditorField[] = [
-      createEditorField('summary', 'Summary', issue.summary),
-      createEditorField('description', 'Description', issue.description),
-      createEditorField('status', 'Status', issue.status),
-      createEditorField('priority', 'Priority', issue.priority ?? ''),
-      createEditorField('assignee', 'Assignee', issue.assignee ?? ''),
-      createEditorField('issue_type', 'Issue Type', issue.issueType),
-      createEditorField('reporter', 'Reporter', issue.reporter ?? ''),
+      ...issue.fields.map((field) => createEditorField(field.id, field.label, field.value)),
       createEditorField('sprint', 'Sprint', sprintName),
       createEditorField('planning_notes', 'Planning Notes', ''),
     ]

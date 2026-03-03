@@ -6,6 +6,7 @@ import {
   type IssueEditorField,
   type IssuePresenceSnapshot,
   type JiraIssue,
+  type JiraIssueField,
   type JiraIssueGroup,
   type JiraIssueResult,
   type JiraSprint,
@@ -34,11 +35,12 @@ const sockets = new Map<string, Bun.ServerWebSocket<SocketData>>()
 const decoder = new TextDecoder()
 const jiraPageSize = 100
 const jiraMaxPages = 40
-const jiraBaseIssueFields = ['summary', 'description', 'status', 'assignee', 'priority', 'issuetype', 'reporter', 'created', 'updated']
+const jiraBaseIssueFields = ['*all']
 const jiraAllowedIssueTypes = new Set(['bug', 'story', 'task'])
 const jiraAllowedIssueStatuses = new Set(['to do', 'in progress', 'for testing'])
 const jiraToDoStatusCategoryNames = new Set(['new', 'todo', 'to do'])
 const jiraInProgressStatusCategoryNames = new Set(['indeterminate', 'in progress'])
+const jiraCoreFieldOrder = ['summary', 'description', 'status', 'priority', 'assignee', 'issuetype', 'reporter', 'created', 'updated']
 const jiraCorsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -209,6 +211,117 @@ const normalizeJiraStatus = (status: string, statusCategory: string): string => 
   }
 
   return status.trim() || 'Unknown'
+}
+
+const extractJiraFieldText = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return ''
+  }
+
+  if (typeof value === 'string') {
+    return normalizeIssueText(value)
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+
+  if (Array.isArray(value)) {
+    return normalizeIssueText(
+      value
+        .map((entry) => extractJiraFieldText(entry))
+        .filter((entry) => entry !== '')
+        .join('\n'),
+    )
+  }
+
+  if (!isRecord(value)) {
+    return ''
+  }
+
+  if (typeof value.displayName === 'string' && value.displayName.trim()) {
+    return value.displayName
+  }
+  if (typeof value.name === 'string' && value.name.trim()) {
+    return value.name
+  }
+  if (typeof value.value === 'string' && value.value.trim()) {
+    return value.value
+  }
+  if (typeof value.key === 'string' && value.key.trim()) {
+    return value.key
+  }
+  if (typeof value.id === 'string' && value.id.trim()) {
+    return value.id
+  }
+
+  if (value.type === 'doc' && Array.isArray(value.content)) {
+    return toJiraDescriptionText(value)
+  }
+
+  try {
+    return normalizeIssueText(JSON.stringify(value, null, 2))
+  } catch {
+    return ''
+  }
+}
+
+const normalizeJiraFieldId = (fieldId: string): string => {
+  if (fieldId === 'issuetype') {
+    return 'issue_type'
+  }
+
+  return fieldId
+}
+
+const buildJiraEditorFields = (
+  fields: Record<string, unknown>,
+  fieldNamesById: Record<string, string>,
+  normalizedStatus: string,
+): JiraIssueField[] => {
+  const mapped = new Map<string, JiraIssueField>()
+  const fallbackCoreLabels: Record<string, string> = {
+    summary: 'Summary',
+    description: 'Description',
+    status: 'Status',
+    priority: 'Priority',
+    assignee: 'Assignee',
+    issuetype: 'Issue Type',
+    reporter: 'Reporter',
+    created: 'Created',
+    updated: 'Updated',
+  }
+
+  const addField = (rawId: string, rawLabel: string, rawValue: unknown): void => {
+    const normalizedId = normalizeFieldId(normalizeJiraFieldId(rawId))
+    const value = extractJiraFieldText(rawValue)
+    if (!normalizedId || !value || mapped.has(normalizedId)) {
+      return
+    }
+
+    mapped.set(normalizedId, {
+      id: normalizedId,
+      label: normalizeFieldLabel(rawLabel, rawId),
+      value,
+    })
+  }
+
+  for (const fieldId of jiraCoreFieldOrder) {
+    if (fieldId === 'status') {
+      addField(fieldId, fieldNamesById[fieldId] ?? fallbackCoreLabels[fieldId] ?? fieldId, normalizedStatus)
+      continue
+    }
+
+    if (fields[fieldId] !== undefined) {
+      addField(fieldId, fieldNamesById[fieldId] ?? fallbackCoreLabels[fieldId] ?? fieldId, fields[fieldId])
+    }
+  }
+
+  for (const [fieldId, fieldValue] of Object.entries(fields)) {
+    addField(fieldId, fieldNamesById[fieldId] ?? fieldId, fieldValue)
+  }
+
+  return [...mapped.values()]
 }
 
 const normalizeTicketPrefix = (value: unknown): string =>
@@ -402,7 +515,10 @@ const cloneJiraIssueResult = (result: JiraIssueResult): JiraIssueResult => ({
     name: group.name,
     category: group.category,
     sprint: group.sprint ? { ...group.sprint } : null,
-    issues: group.issues.map((issue) => ({ ...issue })),
+    issues: group.issues.map((issue) => ({
+      ...issue,
+      fields: issue.fields.map((field) => ({ ...field })),
+    })),
   })),
 })
 
@@ -605,6 +721,7 @@ const mapJiraIssues = (
   jiraOrigin: string,
   payload: unknown,
   sprintFieldId: string | null,
+  fieldNamesById: Record<string, string>,
   preferredSprintState: 'active' | 'future' | null,
 ): JiraIssueWithSprint[] | null => {
   if (!isRecord(payload) || !Array.isArray(payload.issues)) {
@@ -631,13 +748,14 @@ const mapJiraIssues = (
           : typeof statusCategoryField.name === 'string'
             ? statusCategoryField.name
             : ''
+      const normalizedStatus = normalizeJiraStatus(rawStatus, rawStatusCategory)
 
       return {
         id,
         key,
         summary: toSafeString(fields.summary, '(no summary)'),
         description: toJiraDescriptionText(fields.description),
-        status: normalizeJiraStatus(rawStatus, rawStatusCategory),
+        status: normalizedStatus,
         assignee: typeof assigneeField.displayName === 'string' ? assigneeField.displayName : null,
         priority: typeof priorityField.name === 'string' ? priorityField.name : null,
         issueType: toSafeString(issueTypeField.name, 'Issue'),
@@ -645,6 +763,7 @@ const mapJiraIssues = (
         createdAt: typeof fields.created === 'string' ? fields.created : null,
         updatedAt: typeof fields.updated === 'string' ? fields.updated : null,
         url: `${jiraOrigin}/browse/${encodeURIComponent(key)}`,
+        fields: buildJiraEditorFields(fields, fieldNamesById, normalizedStatus),
         sprint: parseIssueSprint(sprintField, preferredSprintState),
       }
     })
@@ -669,7 +788,10 @@ const jiraRequestHeaders = (authorization: string): Record<string, string> => ({
   'Content-Type': 'application/json',
 })
 
-const fetchSprintFieldId = async (jiraOrigin: string, authorization: string): Promise<string | null> => {
+const fetchJiraFieldMetadata = async (
+  jiraOrigin: string,
+  authorization: string,
+): Promise<{ sprintFieldId: string | null; fieldNamesById: Record<string, string> }> => {
   let response: Response
   let payload: unknown
 
@@ -685,16 +807,29 @@ const fetchSprintFieldId = async (jiraOrigin: string, authorization: string): Pr
       payload = null
     }
   } catch {
-    return null
+    return {
+      sprintFieldId: null,
+      fieldNamesById: {},
+    }
   }
 
   if (!response.ok || !Array.isArray(payload)) {
-    return null
+    return {
+      sprintFieldId: null,
+      fieldNamesById: {},
+    }
   }
+
+  let sprintFieldId: string | null = null
+  const fieldNamesById: Record<string, string> = {}
 
   for (const field of payload) {
     if (!isRecord(field) || typeof field.id !== 'string') {
       continue
+    }
+
+    if (typeof field.name === 'string' && field.name.trim()) {
+      fieldNamesById[field.id] = field.name.trim().slice(0, issueFieldLabelMaxLength)
     }
 
     const schema = isRecord(field.schema) ? field.schema : null
@@ -702,11 +837,14 @@ const fetchSprintFieldId = async (jiraOrigin: string, authorization: string): Pr
     const fieldName = typeof field.name === 'string' ? field.name.trim().toLowerCase() : ''
 
     if (customSchema.includes('gh-sprint') || fieldName === 'sprint') {
-      return field.id
+      sprintFieldId = field.id
     }
   }
 
-  return null
+  return {
+    sprintFieldId,
+    fieldNamesById,
+  }
 }
 
 const withoutSprint = (issue: JiraIssueWithSprint): JiraIssue => ({
@@ -722,6 +860,7 @@ const withoutSprint = (issue: JiraIssueWithSprint): JiraIssue => ({
   createdAt: issue.createdAt,
   updatedAt: issue.updatedAt,
   url: issue.url,
+  fields: issue.fields.map((field) => ({ ...field })),
 })
 
 const toDateMs = (value: string | null): number => {
@@ -778,6 +917,7 @@ const fetchAllSearchIssues = async (
   jql: string,
   issueFields: string[],
   sprintFieldId: string | null,
+  fieldNamesById: Record<string, string>,
   preferredSprintState: 'active' | 'future' | null,
 ): Promise<JiraIssueWithSprint[] | Response> => {
   let startAt = 0
@@ -832,7 +972,7 @@ const fetchAllSearchIssues = async (
       return jsonResponse(response.status, { message: jiraErrorMessage(response.status, payload) })
     }
 
-    const pageIssues = mapJiraIssues(jiraOrigin, payload, sprintFieldId, preferredSprintState)
+    const pageIssues = mapJiraIssues(jiraOrigin, payload, sprintFieldId, fieldNamesById, preferredSprintState)
     if (!pageIssues) {
       return jsonResponse(502, { message: 'Unexpected Jira issue response format.' })
     }
@@ -895,8 +1035,9 @@ const fetchJiraIssues = async (request: Request): Promise<JiraIssueResult | Resp
   }
 
   const authorization = Buffer.from(`${email}:${apiToken}`).toString('base64')
-  const sprintFieldId = await fetchSprintFieldId(jiraOrigin, authorization)
-  const issueFields = sprintFieldId ? [...jiraBaseIssueFields, sprintFieldId] : jiraBaseIssueFields
+  const fieldMetadata = await fetchJiraFieldMetadata(jiraOrigin, authorization)
+  const sprintFieldId = fieldMetadata.sprintFieldId
+  const issueFields = jiraBaseIssueFields
 
   const projectClause = `project = "${ticketPrefix}"`
   const currentSprintJql = `${projectClause} AND sprint in openSprints() ORDER BY Rank ASC, created ASC`
@@ -904,9 +1045,33 @@ const fetchJiraIssues = async (request: Request): Promise<JiraIssueResult | Resp
   const backlogJql = `${projectClause} AND sprint is EMPTY ORDER BY Rank ASC, created ASC`
 
   const [currentIssuesResult, nextIssuesResult, backlogIssuesResult] = await Promise.all([
-    fetchAllSearchIssues(jiraOrigin, authorization, currentSprintJql, issueFields, sprintFieldId, 'active'),
-    fetchAllSearchIssues(jiraOrigin, authorization, nextSprintJql, issueFields, sprintFieldId, 'future'),
-    fetchAllSearchIssues(jiraOrigin, authorization, backlogJql, issueFields, sprintFieldId, null),
+    fetchAllSearchIssues(
+      jiraOrigin,
+      authorization,
+      currentSprintJql,
+      issueFields,
+      sprintFieldId,
+      fieldMetadata.fieldNamesById,
+      'active',
+    ),
+    fetchAllSearchIssues(
+      jiraOrigin,
+      authorization,
+      nextSprintJql,
+      issueFields,
+      sprintFieldId,
+      fieldMetadata.fieldNamesById,
+      'future',
+    ),
+    fetchAllSearchIssues(
+      jiraOrigin,
+      authorization,
+      backlogJql,
+      issueFields,
+      sprintFieldId,
+      fieldMetadata.fieldNamesById,
+      null,
+    ),
   ])
 
   if (currentIssuesResult instanceof Response) {

@@ -2,6 +2,12 @@ export const ESTIMATE_OPTIONS = ['0', '1', '2', '3', '5', '8', '13', '20', '?'] 
 
 export type EstimateOption = (typeof ESTIMATE_OPTIONS)[number]
 
+export type JiraIssueField = {
+  id: string
+  label: string
+  value: string
+}
+
 export type JiraIssue = {
   id: string
   key: string
@@ -15,6 +21,7 @@ export type JiraIssue = {
   createdAt: string | null
   updatedAt: string | null
   url: string
+  fields: JiraIssueField[]
 }
 
 export type JiraSprint = {
