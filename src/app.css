@@ -167,6 +167,7 @@ textarea {
   --right-column-width: clamp(160px, 16vw, 240px);
   --workspace-column-gap: 1rem;
   min-height: 0;
+  overflow: hidden;
 }
 
 .panel {
@@ -262,6 +263,7 @@ textarea {
   right: calc(var(--right-column-width) + var(--workspace-column-gap));
   overflow-y: auto;
   padding-top: var(--app-row-gap);
+  padding-bottom: var(--app-row-gap);
   padding-right: 0.35rem;
   scrollbar-gutter: stable;
 }
@@ -290,7 +292,7 @@ textarea {
 .issue-editor {
   display: grid;
   gap: 0.8rem;
-  min-height: 100%;
+  min-height: 0;
   align-content: start;
 }
 

@@ -1010,7 +1010,7 @@
     : ''
 </script>
 
-<main class="app-shell" class:connected={isConnected} on:wheel|nonpassive={handleAppWheel}>
+<main class="app-shell" class:connected={isConnected} on:wheel|capture|nonpassive={handleAppWheel}>
   <header class="topbar">
     <div class="brand">
       <p class="eyebrow">Single Room Scrum Poker</p>
