@@ -2,6 +2,44 @@ export const ESTIMATE_OPTIONS = ['0', '1', '2', '3', '5', '8', '13', '21', '?'] 
 
 export type EstimateOption = (typeof ESTIMATE_OPTIONS)[number]
 
+export type JiraIssue = {
+  id: string
+  key: string
+  summary: string
+  description: string
+  status: string
+  assignee: string | null
+  priority: string | null
+  issueType: string
+  reporter: string | null
+  createdAt: string | null
+  updatedAt: string | null
+  url: string
+}
+
+export type JiraSprint = {
+  id: number
+  name: string
+  state: string
+  startDate: string | null
+  endDate: string | null
+  completeDate: string | null
+}
+
+export type JiraIssueCategory = 'current' | 'future' | 'backlog'
+
+export type JiraIssueGroup = {
+  id: string
+  name: string
+  category: JiraIssueCategory
+  sprint: JiraSprint | null
+  issues: JiraIssue[]
+}
+
+export type JiraIssueResult = {
+  groups: JiraIssueGroup[]
+}
+
 export type IssueEditorField = {
   id: string
   label: string
@@ -99,6 +137,7 @@ export type RoomStateSnapshot = {
   myVote: EstimateOption | null
   participants: ParticipantView[]
   issueWorkspace: IssueWorkspaceSnapshot
+  jiraIssues: JiraIssueResult | null
 }
 
 export type ServerEvent =

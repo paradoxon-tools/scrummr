@@ -7,6 +7,11 @@
     type IssueDraftSnapshot,
     type IssueEditorField,
     type IssueSubtask,
+    type JiraIssue,
+    type JiraIssueCategory,
+    type JiraIssueGroup,
+    type JiraIssueResult,
+    type JiraSprint,
     type RoomStateSnapshot,
     type ServerEvent,
   } from './lib/protocol'
@@ -16,44 +21,6 @@
     email: string
     apiToken: string
     ticketPrefix: string
-  }
-
-  type JiraIssue = {
-    id: string
-    key: string
-    summary: string
-    description: string
-    status: string
-    assignee: string | null
-    priority: string | null
-    issueType: string
-    reporter: string | null
-    createdAt: string | null
-    updatedAt: string | null
-    url: string
-  }
-
-  type JiraSprint = {
-    id: number
-    name: string
-    state: string
-    startDate: string | null
-    endDate: string | null
-    completeDate: string | null
-  }
-
-  type JiraIssueCategory = 'current' | 'future' | 'backlog'
-
-  type JiraIssueGroup = {
-    id: string
-    name: string
-    category: JiraIssueCategory
-    sprint: JiraSprint | null
-    issues: JiraIssue[]
-  }
-
-  type JiraIssueResult = {
-    groups: JiraIssueGroup[]
   }
 
   const STORAGE_KEY = 'scrummer.display_name'
@@ -71,6 +38,7 @@
     myVote: null,
     participants: [],
     issueWorkspace: createEmptyIssueWorkspace(),
+    jiraIssues: null,
   })
 
   const createDefaultJiraConfig = (): JiraConfig => ({
@@ -98,9 +66,13 @@
   let isConnecting = false
   let isProfileEditing = false
   let isJiraLoading = false
+  let isJiraConfigCollapsed = false
+  let hasAutoCollapsedJiraConfig = false
   let socket: WebSocket | null = null
   let profileSyncTimer: number | undefined
   let jiraRequestCounter = 0
+  let isRawTicketDataOpen = false
+  let rawTicketDataIssueId: string | null = null
 
   const socketUrl = (): string => {
     const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim()
@@ -658,7 +630,6 @@
     if (!normalized.baseUrl || !normalized.email || !normalized.apiToken || !normalized.ticketPrefix) {
       jiraError = 'Add Jira URL, email, API token, and ticket prefix first.'
       jiraMessage = ''
-      jiraIssues = null
       return
     }
 
@@ -685,7 +656,6 @@
         const message = isRecord(payload) && typeof payload.message === 'string' ? payload.message : 'Failed to load Jira tickets.'
         jiraError = message
         jiraMessage = ''
-        jiraIssues = null
         return
       }
 
@@ -693,7 +663,6 @@
       if (!result) {
         jiraError = 'Received an unexpected Jira response.'
         jiraMessage = ''
-        jiraIssues = null
         return
       }
 
@@ -711,7 +680,6 @@
 
       jiraError = 'Could not reach the backend Jira endpoint.'
       jiraMessage = ''
-      jiraIssues = null
     } finally {
       if (requestId === jiraRequestCounter) {
         isJiraLoading = false
@@ -721,7 +689,6 @@
 
   const clearJiraConfig = (): void => {
     jiraConfig = createDefaultJiraConfig()
-    jiraIssues = null
     jiraError = ''
     jiraMessage = ''
     window.localStorage.removeItem(JIRA_STORAGE_KEY)
@@ -808,6 +775,7 @@
 
       if (serverEvent.type === 'state_snapshot') {
         roomState = serverEvent.state
+        jiraIssues = serverEvent.state.jiraIssues
         const me = roomState.participants.find((participant) => participant.id === roomState.myId)
         if (me) {
           joinedName = me.name
@@ -833,6 +801,7 @@
       isConnecting = false
       joinedName = ''
       roomState = createEmptyState()
+      jiraIssues = null
       connectionMessage = 'Connection closed. Rejoin to continue planning.'
     })
 
@@ -941,6 +910,42 @@
   $: selectedIssueFromJira = selectedIssueId && jiraIssues
     ? jiraIssues.groups.flatMap((group) => group.issues).find((issue) => issue.id === selectedIssueId) ?? null
     : null
+  $: selectedIssueGroup = selectedIssueId && jiraIssues
+    ? jiraIssues.groups.find((group) => group.issues.some((issue) => issue.id === selectedIssueId)) ?? null
+    : null
+  $: if (selectedIssueId !== rawTicketDataIssueId) {
+    isRawTicketDataOpen = false
+    rawTicketDataIssueId = selectedIssueId
+  }
+  $: selectedIssueRawData = selectedIssueId
+    ? JSON.stringify(
+        {
+          issueId: selectedIssueId,
+          jiraIssue: selectedIssueFromJira,
+          jiraGroup: selectedIssueGroup
+            ? {
+                id: selectedIssueGroup.id,
+                name: selectedIssueGroup.name,
+                category: selectedIssueGroup.category,
+                sprint: selectedIssueGroup.sprint,
+              }
+            : null,
+          sharedDraft: selectedIssueDraft,
+          workspacePresence: roomState.issueWorkspace.presence.filter((entry) => entry.issueId === selectedIssueId),
+        },
+        null,
+        2,
+      )
+    : ''
+  $: loadedJiraTicketCount = jiraIssues ? jiraIssues.groups.reduce((count, group) => count + group.issues.length, 0) : 0
+  $: if (loadedJiraTicketCount > 0 && !hasAutoCollapsedJiraConfig) {
+    isJiraConfigCollapsed = true
+    hasAutoCollapsedJiraConfig = true
+  }
+  $: if (loadedJiraTicketCount === 0) {
+    isJiraConfigCollapsed = false
+    hasAutoCollapsedJiraConfig = false
+  }
   $: selectedIssueKey = selectedIssueDraft?.issueKey || selectedIssueFromJira?.key || ''
   $: selectedIssueUrl = selectedIssueDraft?.issueUrl || selectedIssueFromJira?.url || ''
   $: selectedIssueSummary = getFieldValue(selectedIssueDraft, 'summary') || selectedIssueFromJira?.summary || '(no summary)'
@@ -1013,9 +1018,14 @@
               <strong>{selectedIssueKey}</strong>
               <p>{selectedIssueSummary}</p>
             </div>
-            {#if selectedIssueUrl}
-              <a href={selectedIssueUrl} target="_blank" rel="noreferrer">Open in Jira</a>
-            {/if}
+            <div class="issue-header-actions">
+              <button type="button" class="text-button compact" on:click={() => (isRawTicketDataOpen = !isRawTicketDataOpen)}>
+                {isRawTicketDataOpen ? 'Hide raw data' : 'View raw data'}
+              </button>
+              {#if selectedIssueUrl}
+                <a href={selectedIssueUrl} target="_blank" rel="noreferrer">Open in Jira</a>
+              {/if}
+            </div>
           </div>
 
           <div class="issue-meta">
@@ -1025,6 +1035,13 @@
             <span>Assignee: {selectedIssueAssignee}</span>
             <span>Reporter: {selectedIssueReporter}</span>
           </div>
+
+          {#if isRawTicketDataOpen}
+            <section class="raw-ticket-data">
+              <h3>Raw ticket data</h3>
+              <pre>{selectedIssueRawData}</pre>
+            </section>
+          {/if}
 
           {#if selectedIssueDraft}
             <div class="issue-fields">
@@ -1203,53 +1220,66 @@
       <section class="panel jira-panel">
         <div class="panel-heading">
           <h2>Jira Tickets</h2>
-          <button type="button" class="secondary" on:click={() => void loadJiraIssues()} disabled={isJiraLoading}>
-            {isJiraLoading ? 'Loading...' : 'Refresh'}
-          </button>
+          <div class="jira-panel-actions">
+            <button
+              type="button"
+              class="text-button compact"
+              on:click={() => (isJiraConfigCollapsed = !isJiraConfigCollapsed)}
+            >
+              {isJiraConfigCollapsed ? 'Show config' : 'Hide config'}
+            </button>
+            <button type="button" class="secondary" on:click={() => void loadJiraIssues()} disabled={isJiraLoading}>
+              {isJiraLoading ? 'Loading...' : 'Refresh'}
+            </button>
+          </div>
         </div>
 
-        <form class="jira-form" on:submit|preventDefault={() => void loadJiraIssues()}>
-          <label for="jira-url">Jira URL</label>
-          <input
-            id="jira-url"
-            placeholder="your-team.atlassian.net"
-            bind:value={jiraConfig.baseUrl}
-            on:input={handleJiraConfigInput}
-          />
+        {#if isJiraConfigCollapsed}
+          <p class="jira-config-note">Jira configuration is collapsed while loaded tickets are available.</p>
+        {:else}
+          <form class="jira-form" on:submit|preventDefault={() => void loadJiraIssues()}>
+            <label for="jira-url">Jira URL</label>
+            <input
+              id="jira-url"
+              placeholder="your-team.atlassian.net"
+              bind:value={jiraConfig.baseUrl}
+              on:input={handleJiraConfigInput}
+            />
 
-          <label for="jira-email">Jira account email</label>
-          <input
-            id="jira-email"
-            type="email"
-            placeholder="team.member@company.com"
-            bind:value={jiraConfig.email}
-            on:input={handleJiraConfigInput}
-          />
+            <label for="jira-email">Jira account email</label>
+            <input
+              id="jira-email"
+              type="email"
+              placeholder="team.member@company.com"
+              bind:value={jiraConfig.email}
+              on:input={handleJiraConfigInput}
+            />
 
-          <label for="jira-token">Jira API token</label>
-          <input
-            id="jira-token"
-            type="password"
-            placeholder="Paste API token"
-            bind:value={jiraConfig.apiToken}
-            on:input={handleJiraConfigInput}
-          />
+            <label for="jira-token">Jira API token</label>
+            <input
+              id="jira-token"
+              type="password"
+              placeholder="Paste API token"
+              bind:value={jiraConfig.apiToken}
+              on:input={handleJiraConfigInput}
+            />
 
-          <label for="jira-ticket-prefix">Ticket prefix</label>
-          <input
-            id="jira-ticket-prefix"
-            placeholder="TEAM"
-            bind:value={jiraConfig.ticketPrefix}
-            on:input={handleJiraConfigInput}
-          />
+            <label for="jira-ticket-prefix">Ticket prefix</label>
+            <input
+              id="jira-ticket-prefix"
+              placeholder="TEAM"
+              bind:value={jiraConfig.ticketPrefix}
+              on:input={handleJiraConfigInput}
+            />
 
-          <div class="jira-actions">
-            <button type="submit" class="secondary" disabled={isJiraLoading}>
-              {isJiraLoading ? 'Loading...' : 'Load tickets'}
-            </button>
-            <button type="button" class="text-button" on:click={clearJiraConfig}>Clear</button>
-          </div>
-        </form>
+            <div class="jira-actions">
+              <button type="submit" class="secondary" disabled={isJiraLoading}>
+                {isJiraLoading ? 'Loading...' : 'Load tickets'}
+              </button>
+              <button type="button" class="text-button" on:click={clearJiraConfig}>Clear</button>
+            </div>
+          </form>
+        {/if}
 
         {#if jiraError}
           <p class="jira-error">{jiraError}</p>

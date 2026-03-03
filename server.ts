@@ -5,6 +5,10 @@ import {
   type IssueDraftSnapshot,
   type IssueEditorField,
   type IssuePresenceSnapshot,
+  type JiraIssue,
+  type JiraIssueGroup,
+  type JiraIssueResult,
+  type JiraSprint,
   type RoomStateSnapshot,
   type ServerEvent,
 } from './src/lib/protocol'
@@ -19,46 +23,8 @@ type SocketData = {
   id: string
 }
 
-type JiraIssue = {
-  id: string
-  key: string
-  summary: string
-  description: string
-  status: string
-  assignee: string | null
-  priority: string | null
-  issueType: string
-  reporter: string | null
-  createdAt: string | null
-  updatedAt: string | null
-  url: string
-}
-
-type JiraSprint = {
-  id: number
-  name: string
-  state: string
-  startDate: string | null
-  endDate: string | null
-  completeDate: string | null
-}
-
-type JiraIssueCategory = 'current' | 'future' | 'backlog'
-
 type JiraIssueWithSprint = JiraIssue & {
   sprint: JiraSprint | null
-}
-
-type JiraIssueGroup = {
-  id: string
-  name: string
-  category: JiraIssueCategory
-  sprint: JiraSprint | null
-  issues: JiraIssue[]
-}
-
-type JiraIssuePayload = {
-  groups: JiraIssueGroup[]
 }
 
 const port = Number(Bun.env.WS_PORT ?? 3001)
@@ -90,6 +56,7 @@ let selectedIssueId: string | null = null
 
 const issueDrafts = new Map<string, IssueDraftSnapshot>()
 const issuePresenceByIssue = new Map<string, Map<string, Set<string>>>()
+let sharedJiraIssues: JiraIssueResult | null = null
 
 const hueDistance = (a: number, b: number): number => {
   const diff = Math.abs(a - b) % 360
@@ -402,6 +369,16 @@ const cloneIssueDraft = (draft: IssueDraftSnapshot): IssueDraftSnapshot => ({
   subtasks: draft.subtasks.map((subtask) => ({ ...subtask })),
   updatedBy: draft.updatedBy,
   updatedAt: draft.updatedAt,
+})
+
+const cloneJiraIssueResult = (result: JiraIssueResult): JiraIssueResult => ({
+  groups: result.groups.map((group) => ({
+    id: group.id,
+    name: group.name,
+    category: group.category,
+    sprint: group.sprint ? { ...group.sprint } : null,
+    issues: group.issues.map((issue) => ({ ...issue })),
+  })),
 })
 
 const touchIssueDraft = (draft: IssueDraftSnapshot, updatedBy: string | null): void => {
@@ -859,7 +836,7 @@ const fetchAllSearchIssues = async (
   return issues
 }
 
-const fetchJiraIssues = async (request: Request): Promise<Response> => {
+const fetchJiraIssues = async (request: Request): Promise<JiraIssueResult | Response> => {
   let body: unknown
   try {
     body = await request.json()
@@ -920,11 +897,11 @@ const fetchJiraIssues = async (request: Request): Promise<Response> => {
     })
   }
 
-  const response: JiraIssuePayload = {
+  const response: JiraIssueResult = {
     groups,
   }
 
-  return jsonResponse(200, response)
+  return response
 }
 
 const parseClientEvent = (rawMessage: string | Uint8Array | ArrayBuffer): ClientEvent | null => {
@@ -961,6 +938,7 @@ const makeSnapshot = (clientId: string): RoomStateSnapshot => {
     myVote: users.get(clientId)?.vote ?? null,
     participants,
     issueWorkspace: toWorkspaceSnapshot(),
+    jiraIssues: sharedJiraIssues ? cloneJiraIssueResult(sharedJiraIssues) : null,
   }
 }
 
@@ -1021,7 +999,15 @@ const server = Bun.serve<SocketData>({
       if (request.method !== 'POST') {
         return jsonResponse(405, { message: 'Method not allowed.' })
       }
-      return fetchJiraIssues(request)
+
+      const jiraIssues = await fetchJiraIssues(request)
+      if (jiraIssues instanceof Response) {
+        return jiraIssues
+      }
+
+      sharedJiraIssues = jiraIssues
+      broadcastSnapshots()
+      return jsonResponse(200, jiraIssues)
     }
 
     if (requestUrl.pathname === '/ws') {
@@ -1323,6 +1309,7 @@ const server = Bun.serve<SocketData>({
         selectedIssueId = null
         issueDrafts.clear()
         issuePresenceByIssue.clear()
+        sharedJiraIssues = null
       }
 
       broadcastSnapshots()
