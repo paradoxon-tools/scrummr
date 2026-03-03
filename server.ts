@@ -35,7 +35,7 @@ const decoder = new TextDecoder()
 const jiraPageSize = 100
 const jiraMaxPages = 40
 const jiraBaseIssueFields = ['summary', 'description', 'status', 'assignee', 'priority', 'issuetype', 'reporter', 'created', 'updated']
-const jiraAllowedIssueTypes = new Set(['bug', 'story'])
+const jiraAllowedIssueTypes = new Set(['bug', 'story', 'task'])
 const jiraCorsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
