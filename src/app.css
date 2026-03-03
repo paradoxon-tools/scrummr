@@ -545,6 +545,7 @@ input.busy {
   top: var(--column-top-offset);
   bottom: 0;
   width: var(--right-column-width);
+  padding-right: 0.7rem;
   align-self: start;
   overflow: hidden;
   display: grid;
