@@ -85,7 +85,7 @@ textarea {
   position: relative;
   display: block;
   overflow: hidden;
-  padding-bottom: 1rem;
+  padding: 1rem 0 1rem 1rem;
 }
 
 .app-shell.connected .topbar {
@@ -928,6 +928,7 @@ input.busy {
     position: static;
     display: grid;
     overflow: visible;
+    padding: 1rem;
   }
 
   .app-shell.connected .topbar {
@@ -968,7 +969,7 @@ input.busy {
   }
 
   .app-shell.connected {
-    padding-bottom: 0.75rem;
+    padding: 0.75rem;
   }
 
   .panel {
