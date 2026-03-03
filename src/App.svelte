@@ -918,8 +918,6 @@
   $: votedCount = roomState.participants.filter((participant) => participant.hasVoted).length
   $: totalCount = roomState.participants.length
   $: canReveal = votedCount > 0
-  $: myParticipant = roomState.participants.find((participant) => participant.id === roomState.myId)
-  $: myHue = myParticipant?.colorHue ?? 210
   $: revealBuckets = ESTIMATE_OPTIONS.map((estimate) => ({
     estimate,
     voters: roomState.participants.filter((participant) => participant.vote === estimate),
@@ -1263,6 +1261,30 @@
             </li>
           {/each}
         </ul>
+
+        <section class="participant-vote-panel" aria-label="Estimation options">
+          <button
+            type="button"
+            class="primary participant-action-button"
+            on:click={revealOrNextTicket}
+            disabled={!roomState.revealed && !canReveal}
+          >
+            {roomState.revealed ? 'Next ticket' : 'Reveal'}
+          </button>
+
+          <div class="participant-vote-grid" role="group" aria-label="Vote cards">
+            {#each ESTIMATE_OPTIONS as option}
+              <button
+                type="button"
+                class:selected={roomState.myVote === option}
+                class="vote-card participant-vote-card"
+                on:click={() => setVote(option)}
+              >
+                {option}
+              </button>
+            {/each}
+          </div>
+        </section>
       </section>
 
       <section class="jira-panel">
@@ -1369,21 +1391,6 @@
       </section>
     </section>
 
-    <section class="vote-dock" aria-label="Estimation options">
-      <div class="vote-dock-inner">
-        <button type="button" class="primary action-button" on:click={revealOrNextTicket} disabled={!roomState.revealed && !canReveal}>
-          {roomState.revealed ? 'Next ticket' : 'Reveal'}
-        </button>
-
-        <div class="dock-cards" role="group" aria-label="Vote cards">
-          {#each ESTIMATE_OPTIONS as option}
-            <button type="button" class:selected={roomState.myVote === option} class="vote-card" on:click={() => setVote(option)}>
-              {option}
-            </button>
-          {/each}
-        </div>
-      </div>
-    </section>
   {/if}
 
   {#if connectionMessage}

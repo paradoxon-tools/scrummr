@@ -72,7 +72,7 @@ textarea {
 }
 
 .app-shell.connected {
-  padding-bottom: 12rem;
+  padding-bottom: 1rem;
 }
 
 .topbar {
@@ -599,6 +599,44 @@ input.busy {
   color: #334b6e;
 }
 
+.participant-vote-panel {
+  margin-top: 0.55rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.participant-action-button {
+  width: 100%;
+  min-height: 2rem;
+  padding: 0.35rem 0.45rem;
+  font-size: 0.78rem;
+}
+
+.participant-vote-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.vote-card {
+  min-height: 2.2rem;
+  font-size: 0.92rem;
+  color: #17305a;
+  background: #f0f6ff;
+  border: 1px solid #bfd0ea;
+  padding: 0.26rem 0.2rem;
+}
+
+.participant-vote-card {
+  width: 100%;
+}
+
+.vote-card.selected {
+  color: #ffffff;
+  background: linear-gradient(145deg, #dc6a41 0%, #b54b57 100%);
+  border-color: transparent;
+}
+
 .jira-panel {
   grid-column: 1;
   grid-row: 1 / span 2;
@@ -755,61 +793,6 @@ input.busy {
   line-height: 1.2;
 }
 
-.vote-dock {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 20;
-  padding: 0.65rem 0.8rem 0.8rem;
-  background: linear-gradient(180deg, transparent 0%, rgba(240, 246, 255, 0.72) 25%, rgba(240, 246, 255, 0.92) 100%);
-  backdrop-filter: blur(8px);
-}
-
-.vote-dock-inner {
-  width: min(1200px, 100%);
-  margin: 0 auto;
-  display: flex;
-  gap: 0.8rem;
-  align-items: center;
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(16, 33, 57, 0.12);
-  border-radius: 18px;
-  padding: 0.6rem;
-  box-shadow: 0 12px 28px rgba(16, 33, 57, 0.15);
-}
-
-.action-button {
-  flex: 0 0 auto;
-  min-width: 124px;
-  padding: 0.68rem 0.9rem;
-}
-
-.dock-cards {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(64px, 74px);
-  gap: 0.55rem;
-  overflow-x: auto;
-  padding-bottom: 0.15rem;
-}
-
-.vote-card {
-  min-height: 62px;
-  font-size: 1.25rem;
-  color: #17305a;
-  background: #f0f6ff;
-  border: 1px solid #bfd0ea;
-}
-
-.vote-card.selected {
-  color: #ffffff;
-  background: linear-gradient(145deg, #dc6a41 0%, #b54b57 100%);
-  border-color: transparent;
-}
-
 .message {
   margin: 0;
   padding: 0.55rem 0.65rem;
@@ -840,7 +823,7 @@ input.busy {
   }
 
   .app-shell.connected {
-    padding-bottom: 11.2rem;
+    padding-bottom: 0.75rem;
   }
 
   .panel {
@@ -848,27 +831,9 @@ input.busy {
     padding: 0.8rem;
   }
 
-  .vote-dock {
-    padding: 0.55rem 0.55rem 0.65rem;
-  }
-
-  .vote-dock-inner {
-    gap: 0.55rem;
-    padding: 0.5rem;
-  }
-
-  .action-button {
-    min-width: 104px;
-    padding: 0.6rem 0.72rem;
-  }
-
-  .dock-cards {
-    grid-auto-columns: minmax(58px, 66px);
-  }
-
   .vote-card {
-    min-height: 56px;
-    font-size: 1.1rem;
+    min-height: 2rem;
+    font-size: 0.86rem;
   }
 
   .subtask-add {
