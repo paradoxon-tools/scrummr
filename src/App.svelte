@@ -23,7 +23,9 @@
   let connectionMessage = ''
   let isConnected = false
   let isConnecting = false
+  let isProfileEditing = false
   let socket: WebSocket | null = null
+  let profileSyncTimer: number | undefined
 
   const socketUrl = (): string => {
     const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim()
@@ -38,21 +40,38 @@
   const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
 
   const saveNameLocally = (name: string): void => {
-    window.localStorage.setItem(STORAGE_KEY, name)
+    const trimmed = name.trim()
+    if (trimmed) {
+      window.localStorage.setItem(STORAGE_KEY, name.slice(0, 40))
+      return
+    }
+
+    window.localStorage.removeItem(STORAGE_KEY)
   }
 
   const send = (event: ClientEvent): void => {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return
     }
+
     socket.send(JSON.stringify(event))
   }
 
-  const readStoredName = (): void => {
+  const readStoredName = (): boolean => {
     const storedName = window.localStorage.getItem(STORAGE_KEY)
-    if (storedName) {
-      nameInput = storedName
+    if (!storedName) {
+      return false
     }
+
+    const normalized = normalizeName(storedName)
+    if (!normalized) {
+      window.localStorage.removeItem(STORAGE_KEY)
+      return false
+    }
+
+    nameInput = normalized
+    saveNameLocally(normalized)
+    return true
   }
 
   const parseServerEvent = (payload: string): ServerEvent | null => {
@@ -61,10 +80,44 @@
       if (!parsed || typeof parsed !== 'object' || typeof parsed.type !== 'string') {
         return null
       }
+
       return parsed as ServerEvent
     } catch {
       return null
     }
+  }
+
+  const commitProfileName = (showError: boolean): void => {
+    const normalizedName = normalizeName(nameInput)
+    if (!normalizedName) {
+      if (showError) {
+        connectionMessage = 'Display name cannot be empty.'
+      }
+
+      nameInput = joinedName
+      return
+    }
+
+    nameInput = normalizedName
+    saveNameLocally(normalizedName)
+
+    if (!isConnected || normalizedName === joinedName) {
+      return
+    }
+
+    joinedName = normalizedName
+    send({ type: 'update_name', name: normalizedName })
+  }
+
+  const scheduleProfileNameSync = (): void => {
+    if (!isConnected) {
+      return
+    }
+
+    window.clearTimeout(profileSyncTimer)
+    profileSyncTimer = window.setTimeout(() => {
+      commitProfileName(false)
+    }, 320)
   }
 
   const connect = (): void => {
@@ -110,6 +163,14 @@
 
       if (serverEvent.type === 'state_snapshot') {
         roomState = serverEvent.state
+        const me = roomState.participants.find((participant) => participant.id === roomState.myId)
+        if (me) {
+          joinedName = me.name
+          if (!isProfileEditing) {
+            nameInput = me.name
+          }
+        }
+
         return
       }
 
@@ -138,30 +199,43 @@
     })
   }
 
-  const saveName = (event: SubmitEvent): void => {
-    event.preventDefault()
-    const normalizedName = normalizeName(nameInput)
+  const handleNameInput = (): void => {
+    nameInput = nameInput.slice(0, 40)
+    saveNameLocally(nameInput)
+    scheduleProfileNameSync()
+  }
 
-    if (!normalizedName) {
-      connectionMessage = 'Display name cannot be empty.'
+  const submitJoin = (event: SubmitEvent): void => {
+    event.preventDefault()
+    connect()
+  }
+
+  const handleProfileBlur = (): void => {
+    isProfileEditing = false
+    window.clearTimeout(profileSyncTimer)
+    if (!isConnected) {
       return
     }
 
-    nameInput = normalizedName
-    saveNameLocally(normalizedName)
-    connectionMessage = isConnected ? 'Display name updated.' : 'Display name saved.'
+    commitProfileName(true)
+  }
 
-    if (isConnected) {
-      joinedName = normalizedName
-      send({ type: 'update_name', name: normalizedName })
+  const handleProfileKeydown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Enter') {
+      return
     }
+
+    event.preventDefault()
+    if (!isConnected) {
+      return
+    }
+
+    window.clearTimeout(profileSyncTimer)
+    commitProfileName(true)
+    ;(event.currentTarget as HTMLInputElement).blur()
   }
 
   const setVote = (option: EstimateOption): void => {
-    if (roomState.revealed) {
-      return
-    }
-
     const nextVote = roomState.myVote === option ? null : option
     send({ type: 'set_vote', vote: nextVote })
   }
@@ -175,79 +249,135 @@
     send({ type: 'reveal' })
   }
 
-  onMount(readStoredName)
+  const requestNewColor = (): void => {
+    if (!isConnected) {
+      return
+    }
+
+    send({ type: 'reroll_color' })
+  }
+
+  onMount(() => {
+    const hasStoredName = readStoredName()
+    if (hasStoredName) {
+      connect()
+    }
+  })
 
   onDestroy(() => {
+    window.clearTimeout(profileSyncTimer)
     socket?.close()
   })
 
   $: votedCount = roomState.participants.filter((participant) => participant.hasVoted).length
   $: totalCount = roomState.participants.length
   $: canReveal = votedCount > 0
+  $: myParticipant = roomState.participants.find((participant) => participant.id === roomState.myId)
+  $: myHue = myParticipant?.colorHue ?? 210
+  $: revealBuckets = ESTIMATE_OPTIONS.map((estimate) => ({
+    estimate,
+    voters: roomState.participants.filter((participant) => participant.vote === estimate),
+  })).filter((bucket) => bucket.voters.length > 0)
 </script>
 
-<main class="layout">
-  <section class="panel">
-    <header class="hero">
+<main class="app-shell" class:connected={isConnected}>
+  <header class="topbar">
+    <div class="brand">
       <p class="eyebrow">Single Room Scrum Poker</p>
       <h1>Scrummer</h1>
-      <p class="subtitle">Vote independently, reveal together, then move to the next ticket.</p>
-    </header>
+    </div>
 
-    <form class="name-form" on:submit={saveName}>
-      <label for="display-name">Display name</label>
-      <div class="row">
+    <form class="profile" style={`--user-hue: ${myHue};`} on:submit|preventDefault>
+      <label for="display-name">Profile</label>
+      <div class="profile-input-wrap">
+        <button
+          type="button"
+          class="color-swatch"
+          aria-label="Get a new profile color"
+          title="Get a new color"
+          on:click={requestNewColor}
+          disabled={!isConnected}
+        ></button>
         <input
           id="display-name"
           maxlength="40"
           bind:value={nameInput}
-          placeholder="Your name"
+          placeholder="Your display name"
           autocomplete="name"
+          on:focus={() => (isProfileEditing = true)}
+          on:blur={handleProfileBlur}
+          on:keydown={handleProfileKeydown}
+          on:input={handleNameInput}
         />
-        <button type="submit" class="secondary">Save</button>
       </div>
+      <small>Saved automatically. Edit anytime; changes sync to the room when connected.</small>
     </form>
+  </header>
 
-    {#if !isConnected}
-      <button type="button" class="primary" on:click={connect} disabled={isConnecting}>
-        {isConnecting ? 'Connecting...' : 'Join planning room'}
-      </button>
-    {:else}
-      <p class="connected-as">Connected as <strong>{joinedName}</strong></p>
-
-      <section class="card-grid" aria-label="Estimation options">
-        {#each ESTIMATE_OPTIONS as option}
-          <button
-            type="button"
-            class:selected={roomState.myVote === option}
-            class="vote-card"
-            on:click={() => setVote(option)}
-            disabled={roomState.revealed}
-          >
-            {option}
-          </button>
-        {/each}
-      </section>
-
-      <div class="actions">
-        <button type="button" class="primary" on:click={revealOrNextTicket} disabled={!roomState.revealed && !canReveal}>
-          {roomState.revealed ? 'Next ticket' : 'Reveal'}
+  {#if !isConnected}
+    <section class="join-view panel">
+      <h2>Join planning room</h2>
+      <p>Enter your name above and join. Returning users connect automatically.</p>
+      <form on:submit={submitJoin}>
+        <button type="submit" class="primary" disabled={isConnecting}>
+          {isConnecting ? 'Connecting...' : 'Join'}
         </button>
-        <p class="status-line">
+      </form>
+    </section>
+  {:else}
+    <section class="workspace">
+      <section class="panel summary">
+        <div class="panel-heading">
+          <h2>Current ticket</h2>
+          <p>{votedCount} of {totalCount} participants have voted.</p>
+        </div>
+        <p>
           {#if roomState.revealed}
-            Estimates are visible to everyone.
+            Votes are revealed and remain editable until someone selects <strong>Next ticket</strong>.
           {:else}
-            {votedCount} of {totalCount} participants have voted.
+            Votes stay hidden until any participant reveals.
           {/if}
         </p>
-      </div>
+      </section>
 
-      <section class="participants">
+      {#if roomState.revealed}
+        <section class="panel breakdown">
+          <h2>Revealed breakdown</h2>
+          <div class="breakdown-grid">
+            {#each revealBuckets as bucket}
+              <article class="estimate-group">
+                <h3>{bucket.estimate}</h3>
+                <div class="badge-list">
+                  {#each bucket.voters as voter}
+                    <span class="user-badge" style={`--user-hue: ${voter.colorHue};`}>{voter.name}</span>
+                  {/each}
+                </div>
+              </article>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
+      <section class="panel participants">
         <h2>Participants</h2>
         <ul>
           {#each roomState.participants as participant}
-            <li class:me={participant.id === roomState.myId}>
-              <span>{participant.name}</span>
+            <li class:me={participant.id === roomState.myId} style={`--user-hue: ${participant.colorHue};`}>
+              <div class="person">
+                {#if participant.id === roomState.myId}
+                  <button
+                    type="button"
+                    class="color-swatch mini"
+                    aria-label="Get a new participant color"
+                    title="Get a new color"
+                    on:click={requestNewColor}
+                  ></button>
+                {:else}
+                  <span class="avatar-dot" aria-hidden="true"></span>
+                {/if}
+                <span>{participant.name}</span>
+              </div>
+
               {#if roomState.revealed}
                 <strong>{participant.vote ?? '-'}</strong>
               {:else}
@@ -257,10 +387,26 @@
           {/each}
         </ul>
       </section>
-    {/if}
+    </section>
 
-    {#if connectionMessage}
-      <p class="message">{connectionMessage}</p>
-    {/if}
-  </section>
+    <section class="vote-dock" aria-label="Estimation options">
+      <div class="vote-dock-inner">
+        <button type="button" class="primary action-button" on:click={revealOrNextTicket} disabled={!roomState.revealed && !canReveal}>
+          {roomState.revealed ? 'Next ticket' : 'Reveal'}
+        </button>
+
+        <div class="dock-cards" role="group" aria-label="Vote cards">
+          {#each ESTIMATE_OPTIONS as option}
+            <button type="button" class:selected={roomState.myVote === option} class="vote-card" on:click={() => setVote(option)}>
+              {option}
+            </button>
+          {/each}
+        </div>
+      </div>
+    </section>
+  {/if}
+
+  {#if connectionMessage}
+    <p class="message">{connectionMessage}</p>
+  {/if}
 </main>

@@ -8,6 +8,7 @@ import {
 
 type UserState = {
   name: string
+  colorHue: number
   vote: EstimateOption | null
 }
 
@@ -22,6 +23,51 @@ const sockets = new Map<string, Bun.ServerWebSocket<SocketData>>()
 const decoder = new TextDecoder()
 
 let revealed = false
+
+const hueDistance = (a: number, b: number): number => {
+  const diff = Math.abs(a - b) % 360
+  return Math.min(diff, 360 - diff)
+}
+
+const pickDistinctHue = (excludeUserId?: string, avoidHue?: number): number => {
+  const usedHues = [...users.entries()]
+    .filter(([id]) => id !== excludeUserId)
+    .map(([, user]) => user.colorHue)
+
+  if (usedHues.length === 0) {
+    const randomHue = Math.floor(Math.random() * 360)
+    if (avoidHue === undefined || randomHue !== avoidHue) {
+      return randomHue
+    }
+
+    return (randomHue + 137) % 360
+  }
+
+  let bestHue = Math.floor(Math.random() * 360)
+  let bestScore = -1
+
+  for (let attempt = 0; attempt < 96; attempt += 1) {
+    const candidate = Math.floor(Math.random() * 360)
+    let closestDistance = 180
+
+    for (const usedHue of usedHues) {
+      closestDistance = Math.min(closestDistance, hueDistance(candidate, usedHue))
+    }
+
+    const score = avoidHue !== undefined && candidate === avoidHue ? closestDistance - 360 : closestDistance
+
+    if (score > bestScore) {
+      bestHue = candidate
+      bestScore = score
+    }
+  }
+
+  if (avoidHue !== undefined && bestHue === avoidHue) {
+    return (bestHue + 137) % 360
+  }
+
+  return bestHue
+}
 
 const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
 
@@ -47,6 +93,7 @@ const makeSnapshot = (clientId: string): RoomStateSnapshot => {
     .map(([id, user]) => ({
       id,
       name: user.name,
+      colorHue: user.colorHue,
       hasVoted: user.vote !== null,
       vote: revealed ? user.vote : null,
     }))
@@ -87,7 +134,7 @@ const resetRound = (): void => {
 
 const setVote = (clientId: string, vote: EstimateOption | null): boolean => {
   const user = users.get(clientId)
-  if (!user || revealed) {
+  if (!user) {
     return false
   }
 
@@ -143,7 +190,7 @@ const server = Bun.serve<SocketData>({
           if (existingUser) {
             existingUser.name = normalizedName
           } else {
-            users.set(clientId, { name: normalizedName, vote: null })
+            users.set(clientId, { name: normalizedName, colorHue: pickDistinctHue(), vote: null })
           }
 
           broadcastSnapshots()
@@ -163,6 +210,17 @@ const server = Bun.serve<SocketData>({
           }
 
           user.name = normalizedName
+          broadcastSnapshots()
+          return
+        }
+        case 'reroll_color': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before changing your color.' })
+            return
+          }
+
+          user.colorHue = pickDistinctHue(clientId, user.colorHue)
           broadcastSnapshots()
           return
         }

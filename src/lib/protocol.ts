@@ -5,6 +5,7 @@ export type EstimateOption = (typeof ESTIMATE_OPTIONS)[number]
 export type ClientEvent =
   | { type: 'join'; name: string }
   | { type: 'update_name'; name: string }
+  | { type: 'reroll_color' }
   | { type: 'set_vote'; vote: EstimateOption | null }
   | { type: 'reveal' }
   | { type: 'next_ticket' }
@@ -12,6 +13,7 @@ export type ClientEvent =
 export type ParticipantView = {
   id: string
   name: string
+  colorHue: number
   hasVoted: boolean
   vote: EstimateOption | null
 }
