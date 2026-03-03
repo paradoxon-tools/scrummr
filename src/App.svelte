@@ -1023,11 +1023,12 @@
     </section>
   {:else}
     <section class="workspace">
-      <section class="panel summary issue-editor" bind:this={ticketWorkspaceElement}>
-        <div class="panel-heading">
-          <h2>Ticket Workspace</h2>
-          <p>{votedCount} of {totalCount} participants have voted.</p>
-        </div>
+      <div class="middle-scroll">
+        <section class="panel summary issue-editor" bind:this={ticketWorkspaceElement}>
+          <div class="panel-heading">
+            <h2>Ticket Workspace</h2>
+            <p>{votedCount} of {totalCount} participants have voted.</p>
+          </div>
 
         {#if selectedIssueId}
           <div class="issue-header">
@@ -1180,32 +1181,15 @@
           </div>
         {/if}
 
-        <p>
-          {#if roomState.revealed}
-            Votes are revealed and remain editable until someone selects <strong>Next ticket</strong>.
-          {:else}
-            Votes stay hidden until any participant reveals.
-          {/if}
-        </p>
-      </section>
-
-      {#if roomState.revealed}
-        <section class="panel breakdown">
-          <h2>Revealed breakdown</h2>
-          <div class="breakdown-grid">
-            {#each revealBuckets as bucket}
-              <article class="estimate-group">
-                <h3>{bucket.estimate}</h3>
-                <div class="badge-list">
-                  {#each bucket.voters as voter}
-                    <span class="user-badge" style={`--user-hue: ${voter.colorHue};`}>{voter.name}</span>
-                  {/each}
-                </div>
-              </article>
-            {/each}
-          </div>
+          <p>
+            {#if roomState.revealed}
+              Votes are revealed and remain editable until someone selects <strong>Next ticket</strong>.
+            {:else}
+              Votes stay hidden until any participant reveals.
+            {/if}
+          </p>
         </section>
-      {/if}
+      </div>
 
       <section class="participants">
         <h2>Participants</h2>
@@ -1297,6 +1281,24 @@
             {/each}
           </div>
         </section>
+
+        {#if roomState.revealed}
+          <section class="participant-breakdown">
+            <h3>Revealed breakdown</h3>
+            <div class="breakdown-grid compact">
+              {#each revealBuckets as bucket}
+                <article class="estimate-group">
+                  <h3>{bucket.estimate}</h3>
+                  <div class="badge-list">
+                    {#each bucket.voters as voter}
+                      <span class="user-badge" style={`--user-hue: ${voter.colorHue};`}>{voter.name}</span>
+                    {/each}
+                  </div>
+                </article>
+              {/each}
+            </div>
+          </section>
+        {/if}
       </section>
 
       <section class="jira-panel">
