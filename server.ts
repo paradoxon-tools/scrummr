@@ -4,6 +4,7 @@ import {
   type EstimateOption,
   type IssueDraftSnapshot,
   type IssueEditorField,
+  type IssuePresenceSnapshot,
   type RoomStateSnapshot,
   type ServerEvent,
 } from './src/lib/protocol'
@@ -82,11 +83,13 @@ const subtaskTitleMaxLength = 240
 const subtaskDescriptionMaxLength = 16000
 const maxSubtasksPerIssue = 100
 const maxIssueFieldsPerDraft = 64
+const issuePresenceTargetIdMaxLength = 120
 
 let revealed = false
 let selectedIssueId: string | null = null
 
 const issueDrafts = new Map<string, IssueDraftSnapshot>()
+const issuePresenceByIssue = new Map<string, Map<string, Set<string>>>()
 
 const hueDistance = (a: number, b: number): number => {
   const diff = Math.abs(a - b) % 360
@@ -156,6 +159,18 @@ const normalizeFieldId = (value: unknown): string => {
     .toLowerCase()
     .replace(/[^a-z0-9._-]/g, '_')
     .slice(0, issueFieldIdMaxLength)
+}
+
+const normalizeIssuePresenceTargetId = (value: unknown): string => {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9:._-]/g, '_')
+    .slice(0, issuePresenceTargetIdMaxLength)
 }
 
 const normalizeFieldLabel = (value: unknown, fallback: string): string => {
@@ -445,11 +460,139 @@ const ensureIssueDraft = (
   return draft
 }
 
+const setIssuePresenceState = (clientId: string, issueId: string, targetId: string, active: boolean): boolean => {
+  const normalizedIssueId = normalizeIssueId(issueId)
+  const normalizedTargetId = normalizeIssuePresenceTargetId(targetId)
+  if (!normalizedIssueId || !normalizedTargetId) {
+    return false
+  }
+
+  if (active) {
+    let issueTargets = issuePresenceByIssue.get(normalizedIssueId)
+    if (!issueTargets) {
+      issueTargets = new Map<string, Set<string>>()
+      issuePresenceByIssue.set(normalizedIssueId, issueTargets)
+    }
+
+    let participants = issueTargets.get(normalizedTargetId)
+    if (!participants) {
+      participants = new Set<string>()
+      issueTargets.set(normalizedTargetId, participants)
+    }
+
+    const previousSize = participants.size
+    participants.add(clientId)
+    return participants.size !== previousSize
+  }
+
+  const issueTargets = issuePresenceByIssue.get(normalizedIssueId)
+  if (!issueTargets) {
+    return false
+  }
+
+  const participants = issueTargets.get(normalizedTargetId)
+  if (!participants) {
+    return false
+  }
+
+  const changed = participants.delete(clientId)
+  if (participants.size === 0) {
+    issueTargets.delete(normalizedTargetId)
+  }
+  if (issueTargets.size === 0) {
+    issuePresenceByIssue.delete(normalizedIssueId)
+  }
+
+  return changed
+}
+
+const clearClientIssuePresence = (clientId: string): boolean => {
+  let changed = false
+  for (const [issueId, issueTargets] of issuePresenceByIssue.entries()) {
+    for (const [targetId, participants] of issueTargets.entries()) {
+      const removed = participants.delete(clientId)
+      changed = changed || removed
+      if (participants.size === 0) {
+        issueTargets.delete(targetId)
+      }
+    }
+
+    if (issueTargets.size === 0) {
+      issuePresenceByIssue.delete(issueId)
+    }
+  }
+
+  return changed
+}
+
+const clearIssuePresenceByPrefix = (issueId: string, targetPrefix: string): boolean => {
+  const normalizedIssueId = normalizeIssueId(issueId)
+  const normalizedTargetPrefix = normalizeIssuePresenceTargetId(targetPrefix)
+  if (!normalizedIssueId || !normalizedTargetPrefix) {
+    return false
+  }
+
+  const issueTargets = issuePresenceByIssue.get(normalizedIssueId)
+  if (!issueTargets) {
+    return false
+  }
+
+  let changed = false
+  for (const targetId of [...issueTargets.keys()]) {
+    if (!targetId.startsWith(normalizedTargetPrefix)) {
+      continue
+    }
+
+    issueTargets.delete(targetId)
+    changed = true
+  }
+
+  if (issueTargets.size === 0) {
+    issuePresenceByIssue.delete(normalizedIssueId)
+  }
+
+  return changed
+}
+
+const toIssuePresenceSnapshot = (): IssuePresenceSnapshot[] => {
+  const snapshots: IssuePresenceSnapshot[] = []
+
+  for (const [issueId, issueTargets] of issuePresenceByIssue.entries()) {
+    for (const [targetId, participants] of issueTargets.entries()) {
+      const participantIds = [...participants].filter((participantId) => users.has(participantId))
+      if (participantIds.length === 0) {
+        continue
+      }
+
+      participantIds.sort((a, b) => {
+        const nameA = users.get(a)?.name ?? a
+        const nameB = users.get(b)?.name ?? b
+        return nameA.localeCompare(nameB)
+      })
+
+      snapshots.push({
+        issueId,
+        targetId,
+        participantIds,
+      })
+    }
+  }
+
+  return snapshots.sort((a, b) => {
+    if (a.issueId !== b.issueId) {
+      return a.issueId.localeCompare(b.issueId)
+    }
+
+    return a.targetId.localeCompare(b.targetId)
+  })
+}
+
 const toWorkspaceSnapshot = (): RoomStateSnapshot['issueWorkspace'] => ({
   selectedIssueId,
   drafts: [...issueDrafts.values()]
     .sort((a, b) => a.issueKey.localeCompare(b.issueKey))
     .map((draft) => cloneIssueDraft(draft)),
+  presence: toIssuePresenceSnapshot(),
 })
 
 const normalizeSubtaskTitle = (value: unknown): string => normalizeIssueText(value, subtaskTitleMaxLength).trim()
@@ -1118,8 +1261,35 @@ const server = Bun.serve<SocketData>({
           }
 
           draft.subtasks = nextSubtasks
+          clearIssuePresenceByPrefix(issueId, `subtask:${subtaskId}:`)
           touchIssueDraft(draft, clientId)
           selectedIssueId = issueId
+          broadcastSnapshots()
+          return
+        }
+        case 'set_issue_presence': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before collaborating on a ticket.' })
+            return
+          }
+
+          const issueId = normalizeIssueId(event.issueId)
+          const targetId = normalizeIssuePresenceTargetId(event.targetId)
+          if (!issueId || !targetId) {
+            send(ws, { type: 'server_error', message: 'Presence update is missing required details.' })
+            return
+          }
+
+          if (!issueDrafts.has(issueId)) {
+            return
+          }
+
+          const changed = setIssuePresenceState(clientId, issueId, targetId, event.active)
+          if (!changed) {
+            return
+          }
+
           broadcastSnapshots()
           return
         }
@@ -1146,11 +1316,13 @@ const server = Bun.serve<SocketData>({
     close(ws) {
       sockets.delete(ws.data.id)
       users.delete(ws.data.id)
+      clearClientIssuePresence(ws.data.id)
 
       if (users.size === 0) {
         revealed = false
         selectedIssueId = null
         issueDrafts.clear()
+        issuePresenceByIssue.clear()
       }
 
       broadcastSnapshots()

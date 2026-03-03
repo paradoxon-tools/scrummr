@@ -10,6 +10,7 @@ Single-room scrum planning poker app built with Svelte 5 and Bun.
 - After reveal, the action button becomes `Next ticket` to reset the round.
 - Jira integration panel to configure credentials + ticket prefix and load tickets grouped by their assigned sprint (current/future) plus unsprinted backlog candidates.
 - Click any Jira ticket to open a shared in-room ticket editor with local field edits and subtasks.
+- Live field/subtask presence indicators show who is currently editing what.
 
 ## Run locally
 
@@ -48,5 +49,6 @@ The frontend runs on Vite's default port (`5173`) and connects to `ws://localhos
 - Scrummer calls Jira through the Bun backend at `POST /api/jira/issues`.
 - The Jira request uses the ticket prefix (project key, for example `TEAM`) to load tickets, then groups them by sprint so each current/future sprint appears as its own bucket.
 - Ticket editor changes stay local to the room state and are broadcast to all connected users (no write-back to Jira yet).
+- Presence badges in the editor are local-collaboration hints and are cleared when users blur fields or disconnect.
 - Jira credentials are stored in your browser `localStorage` for convenience in this prototype.
 - For Jira Cloud, use your Atlassian email and an API token.

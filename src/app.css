@@ -279,11 +279,46 @@ textarea {
   gap: 0.45rem;
 }
 
+.issue-field {
+  border: 1px solid #d6e3f4;
+  border-radius: 12px;
+  background: #f7fbff;
+  padding: 0.5rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.issue-field.busy {
+  border-color: #d7b07a;
+  background: #fff8ef;
+}
+
 .issue-fields label {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #455a7c;
+}
+
+.presence-indicator {
+  margin: 0;
+  color: #5f708e;
+  font-size: 0.76rem;
+}
+
+.presence-indicator.others {
+  color: #8c5122;
+  font-weight: 700;
+}
+
+.presence-indicator.subtask {
+  margin-top: -0.1rem;
+}
+
+textarea.busy,
+input.busy {
+  border-color: #d7b07a;
+  background: #fff5e8;
 }
 
 .subtasks {

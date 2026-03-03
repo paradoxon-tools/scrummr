@@ -62,6 +62,7 @@
   const createEmptyIssueWorkspace = (): RoomStateSnapshot['issueWorkspace'] => ({
     selectedIssueId: null,
     drafts: [],
+    presence: [],
   })
 
   const createEmptyState = (): RoomStateSnapshot => ({
@@ -332,6 +333,14 @@
 
   const normalizeEditorText = (value: string, maxLength = 16000): string => value.replace(/\r\n/g, '\n').slice(0, maxLength)
 
+  const normalizePresenceTargetId = (value: string): string =>
+    value.trim().toLowerCase().replace(/[^a-z0-9:._-]/g, '_').slice(0, 120)
+
+  const fieldPresenceTargetId = (fieldId: string): string => normalizePresenceTargetId(`field:${normalizeEditorFieldId(fieldId)}`)
+
+  const subtaskPresenceTargetId = (subtaskId: string, section: 'title' | 'description'): string =>
+    normalizePresenceTargetId(`subtask:${subtaskId}:${section}`)
+
   const createEditorField = (id: string, label: string, value: string): IssueEditorField => ({
     id: normalizeEditorFieldId(id),
     label: label.trim().slice(0, 80),
@@ -385,6 +394,7 @@
   }
 
   const selectIssue = (issue: JiraIssue, group: JiraIssueGroup): void => {
+    releaseAllIssuePresence()
     const sprintName = group.sprint?.name ?? group.name
     send({
       type: 'select_issue',
@@ -417,6 +427,120 @@
       issueKey,
       issueUrl,
     }
+  }
+
+  let activePresenceIssueId: string | null = null
+  const activePresenceTargets = new Set<string>()
+
+  const releaseAllIssuePresence = (): void => {
+    if (!activePresenceIssueId || activePresenceTargets.size === 0) {
+      activePresenceIssueId = null
+      activePresenceTargets.clear()
+      return
+    }
+
+    const issueId = activePresenceIssueId
+    const targets = [...activePresenceTargets]
+    activePresenceIssueId = null
+    activePresenceTargets.clear()
+
+    for (const targetId of targets) {
+      send({
+        type: 'set_issue_presence',
+        issueId,
+        targetId,
+        active: false,
+      })
+    }
+  }
+
+  const setIssuePresence = (targetId: string, active: boolean): void => {
+    const identity = selectedIssueIdentity()
+    if (!identity) {
+      return
+    }
+
+    const normalizedTargetId = normalizePresenceTargetId(targetId)
+    if (!normalizedTargetId) {
+      return
+    }
+
+    if (active) {
+      if (activePresenceIssueId && activePresenceIssueId !== identity.issueId) {
+        releaseAllIssuePresence()
+      }
+
+      if (activePresenceIssueId === identity.issueId && activePresenceTargets.has(normalizedTargetId)) {
+        return
+      }
+
+      activePresenceIssueId = identity.issueId
+      activePresenceTargets.add(normalizedTargetId)
+    } else {
+      if (activePresenceIssueId !== identity.issueId || !activePresenceTargets.has(normalizedTargetId)) {
+        return
+      }
+
+      activePresenceTargets.delete(normalizedTargetId)
+      if (activePresenceTargets.size === 0) {
+        activePresenceIssueId = null
+      }
+    }
+
+    send({
+      type: 'set_issue_presence',
+      issueId: identity.issueId,
+      targetId: normalizedTargetId,
+      active,
+    })
+  }
+
+  const getPresenceEntryForTarget = (targetId: string): RoomStateSnapshot['issueWorkspace']['presence'][number] | null => {
+    if (!selectedIssueId) {
+      return null
+    }
+
+    const normalizedTargetId = normalizePresenceTargetId(targetId)
+    if (!normalizedTargetId) {
+      return null
+    }
+
+    return (
+      roomState.issueWorkspace.presence.find((entry) => entry.issueId === selectedIssueId && entry.targetId === normalizedTargetId) ??
+      null
+    )
+  }
+
+  const isTargetEditedByOthers = (targetId: string): boolean => {
+    const presenceEntry = getPresenceEntryForTarget(targetId)
+    if (!presenceEntry) {
+      return false
+    }
+
+    return presenceEntry.participantIds.some((participantId) => participantId !== roomState.myId)
+  }
+
+  const getPresenceLabelForTarget = (targetId: string): string => {
+    const presenceEntry = getPresenceEntryForTarget(targetId)
+    if (!presenceEntry || presenceEntry.participantIds.length === 0) {
+      return ''
+    }
+
+    const names = presenceEntry.participantIds
+      .map((participantId) => {
+        if (participantId === roomState.myId) {
+          return 'You'
+        }
+
+        return roomState.participants.find((participant) => participant.id === participantId)?.name ?? null
+      })
+      .filter((name): name is string => name !== null)
+
+    if (names.length === 0) {
+      return ''
+    }
+
+    return names.length === 1 ? `${names[0]} is editing` : `${names.join(', ')} are editing`
   }
 
   const setIssueField = (field: IssueEditorField, value: string): void => {
@@ -508,6 +632,9 @@
     if (!issueId) {
       return
     }
+
+    setIssuePresence(subtaskPresenceTargetId(subtask.id, 'title'), false)
+    setIssuePresence(subtaskPresenceTargetId(subtask.id, 'description'), false)
 
     send({
       type: 'remove_issue_subtask',
@@ -700,6 +827,7 @@
         return
       }
 
+      releaseAllIssuePresence()
       socket = null
       isConnected = false
       isConnecting = false
@@ -790,6 +918,7 @@
 
   onDestroy(() => {
     window.clearTimeout(profileSyncTimer)
+    releaseAllIssuePresence()
     socket?.close()
   })
 
@@ -803,6 +932,9 @@
     voters: roomState.participants.filter((participant) => participant.vote === estimate),
   })).filter((bucket) => bucket.voters.length > 0)
   $: selectedIssueId = roomState.issueWorkspace.selectedIssueId
+  $: if (activePresenceIssueId && selectedIssueId !== activePresenceIssueId) {
+    releaseAllIssuePresence()
+  }
   $: selectedIssueDraft = selectedIssueId
     ? roomState.issueWorkspace.drafts.find((draft) => draft.issueId === selectedIssueId) ?? null
     : null
@@ -897,13 +1029,22 @@
           {#if selectedIssueDraft}
             <div class="issue-fields">
               {#each selectedIssueDraft.fields as field (field.id)}
-                <label for={`issue-field-${field.id}`}>{field.label}</label>
-                <textarea
-                  id={`issue-field-${field.id}`}
-                  rows={field.id === 'description' ? 6 : 3}
-                  value={field.value}
-                  on:input={(event) => setIssueField(field, (event.currentTarget as HTMLTextAreaElement).value)}
-                ></textarea>
+                {@const fieldPresenceTarget = fieldPresenceTargetId(field.id)}
+                {@const fieldPresenceLabel = getPresenceLabelForTarget(fieldPresenceTarget)}
+                <div class="issue-field" class:busy={isTargetEditedByOthers(fieldPresenceTarget)}>
+                  <label for={`issue-field-${field.id}`}>{field.label}</label>
+                  {#if fieldPresenceLabel}
+                    <p class="presence-indicator" class:others={isTargetEditedByOthers(fieldPresenceTarget)}>{fieldPresenceLabel}</p>
+                  {/if}
+                  <textarea
+                    id={`issue-field-${field.id}`}
+                    rows={field.id === 'description' ? 6 : 3}
+                    value={field.value}
+                    on:focus={() => setIssuePresence(fieldPresenceTarget, true)}
+                    on:blur={() => setIssuePresence(fieldPresenceTarget, false)}
+                    on:input={(event) => setIssueField(field, (event.currentTarget as HTMLTextAreaElement).value)}
+                  ></textarea>
+                </div>
               {/each}
             </div>
           {:else}
@@ -932,6 +1073,10 @@
             {#if selectedIssueDraft && selectedIssueDraft.subtasks.length > 0}
               <ul class="subtask-list">
                 {#each selectedIssueDraft.subtasks as subtask (subtask.id)}
+                  {@const subtaskTitlePresenceTarget = subtaskPresenceTargetId(subtask.id, 'title')}
+                  {@const subtaskDescriptionPresenceTarget = subtaskPresenceTargetId(subtask.id, 'description')}
+                  {@const subtaskTitlePresenceLabel = getPresenceLabelForTarget(subtaskTitlePresenceTarget)}
+                  {@const subtaskDescriptionPresenceLabel = getPresenceLabelForTarget(subtaskDescriptionPresenceTarget)}
                   <li>
                     <div class="subtask-row">
                       <label class="subtask-done-toggle">
@@ -949,18 +1094,34 @@
                     </div>
 
                     <input
+                      class:busy={isTargetEditedByOthers(subtaskTitlePresenceTarget)}
                       value={subtask.title}
                       placeholder="Subtask title"
+                      on:focus={() => setIssuePresence(subtaskTitlePresenceTarget, true)}
+                      on:blur={() => setIssuePresence(subtaskTitlePresenceTarget, false)}
                       on:input={(event) => updateIssueSubtaskTitle(subtask, (event.currentTarget as HTMLInputElement).value)}
                     />
+                    {#if subtaskTitlePresenceLabel}
+                      <p class="presence-indicator subtask" class:others={isTargetEditedByOthers(subtaskTitlePresenceTarget)}>
+                        {subtaskTitlePresenceLabel}
+                      </p>
+                    {/if}
 
                     <textarea
+                      class:busy={isTargetEditedByOthers(subtaskDescriptionPresenceTarget)}
                       rows="3"
                       value={subtask.description}
                       placeholder="Subtask description"
+                      on:focus={() => setIssuePresence(subtaskDescriptionPresenceTarget, true)}
+                      on:blur={() => setIssuePresence(subtaskDescriptionPresenceTarget, false)}
                       on:input={(event) =>
                         updateIssueSubtaskDescription(subtask, (event.currentTarget as HTMLTextAreaElement).value)}
                     ></textarea>
+                    {#if subtaskDescriptionPresenceLabel}
+                      <p class="presence-indicator subtask" class:others={isTargetEditedByOthers(subtaskDescriptionPresenceTarget)}>
+                        {subtaskDescriptionPresenceLabel}
+                      </p>
+                    {/if}
                   </li>
                 {/each}
               </ul>

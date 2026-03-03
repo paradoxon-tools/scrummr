@@ -25,9 +25,16 @@ export type IssueDraftSnapshot = {
   updatedAt: string
 }
 
+export type IssuePresenceSnapshot = {
+  issueId: string
+  targetId: string
+  participantIds: string[]
+}
+
 export type IssueWorkspaceSnapshot = {
   selectedIssueId: string | null
   drafts: IssueDraftSnapshot[]
+  presence: IssuePresenceSnapshot[]
 }
 
 export type ClientEvent =
@@ -70,6 +77,12 @@ export type ClientEvent =
       type: 'remove_issue_subtask'
       issueId: string
       subtaskId: string
+    }
+  | {
+      type: 'set_issue_presence'
+      issueId: string
+      targetId: string
+      active: boolean
     }
 
 export type ParticipantView = {
