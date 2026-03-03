@@ -35,6 +35,7 @@ const decoder = new TextDecoder()
 const jiraPageSize = 100
 const jiraMaxPages = 40
 const jiraBaseIssueFields = ['summary', 'description', 'status', 'assignee', 'priority', 'issuetype', 'reporter', 'created', 'updated']
+const jiraAllowedIssueTypes = new Set(['bug', 'story'])
 const jiraCorsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -700,6 +701,8 @@ const toDateMs = (value: string | null): number => {
   return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed
 }
 
+const isAllowedJiraIssueType = (issueType: string): boolean => jiraAllowedIssueTypes.has(issueType.trim().toLowerCase())
+
 const groupIssuesBySprint = (
   issues: JiraIssueWithSprint[],
   category: 'current' | 'future',
@@ -882,18 +885,22 @@ const fetchJiraIssues = async (request: Request): Promise<JiraIssueResult | Resp
     return backlogIssuesResult
   }
 
+  const filteredCurrentIssues = currentIssuesResult.filter((issue) => isAllowedJiraIssueType(issue.issueType))
+  const filteredNextIssues = nextIssuesResult.filter((issue) => isAllowedJiraIssueType(issue.issueType))
+  const filteredBacklogIssues = backlogIssuesResult.filter((issue) => isAllowedJiraIssueType(issue.issueType))
+
   const groups: JiraIssueGroup[] = [
-    ...groupIssuesBySprint(currentIssuesResult, 'current'),
-    ...groupIssuesBySprint(nextIssuesResult, 'future'),
+    ...groupIssuesBySprint(filteredCurrentIssues, 'current'),
+    ...groupIssuesBySprint(filteredNextIssues, 'future'),
   ]
 
-  if (backlogIssuesResult.length > 0) {
+  if (filteredBacklogIssues.length > 0) {
     groups.push({
       id: 'backlog',
       name: 'Backlog / No sprint',
       category: 'backlog',
       sprint: null,
-      issues: backlogIssuesResult.map(withoutSprint),
+      issues: filteredBacklogIssues.map(withoutSprint),
     })
   }
 
