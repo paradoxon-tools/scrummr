@@ -1302,7 +1302,15 @@
                         <button type="button" class="jira-issue-select" on:click={() => selectIssue(issue, group)}>
                           <strong>{issue.key}</strong>
                           <p>{issue.summary}</p>
-                          <small>[{issue.issueType}]</small>
+                          <small>
+                            <span>{issue.status}</span>
+                            {#if issue.priority}
+                              <span> - {issue.priority}</span>
+                            {/if}
+                            {#if issue.assignee}
+                              <span> - {issue.assignee}</span>
+                            {/if}
+                          </small>
                         </button>
                         <a href={issue.url} target="_blank" rel="noreferrer">Open</a>
                       </li>
