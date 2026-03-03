@@ -71,6 +71,7 @@
   let socket: WebSocket | null = null
   let profileSyncTimer: number | undefined
   let jiraRequestCounter = 0
+  let ticketWorkspaceElement: HTMLElement | null = null
   let isRawTicketDataOpen = false
   let rawTicketDataIssueId: string | null = null
 
@@ -366,6 +367,7 @@
   }
 
   const selectIssue = (issue: JiraIssue, group: JiraIssueGroup): void => {
+    ticketWorkspaceElement?.scrollIntoView({ block: 'start', behavior: 'smooth' })
     releaseAllIssuePresence()
     const sprintName = group.sprint?.name ?? group.name
     send({
@@ -1006,7 +1008,7 @@
     </section>
   {:else}
     <section class="workspace">
-      <section class="panel summary issue-editor">
+      <section class="panel summary issue-editor" bind:this={ticketWorkspaceElement}>
         <div class="panel-heading">
           <h2>Ticket Workspace</h2>
           <p>{votedCount} of {totalCount} participants have voted.</p>
