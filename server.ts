@@ -36,6 +36,9 @@ const jiraPageSize = 100
 const jiraMaxPages = 40
 const jiraBaseIssueFields = ['summary', 'description', 'status', 'assignee', 'priority', 'issuetype', 'reporter', 'created', 'updated']
 const jiraAllowedIssueTypes = new Set(['bug', 'story', 'task'])
+const jiraAllowedIssueStatuses = new Set(['to do', 'in progress', 'for testing'])
+const jiraToDoStatusCategoryNames = new Set(['new', 'todo', 'to do'])
+const jiraInProgressStatusCategoryNames = new Set(['indeterminate', 'in progress'])
 const jiraCorsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -186,6 +189,27 @@ const normalizeJiraOrigin = (value: unknown): string | null => {
 
 const toSafeString = (value: unknown, fallback: string): string =>
   typeof value === 'string' && value.trim() ? value : fallback
+
+const normalizeComparableText = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ')
+
+const normalizeJiraStatus = (status: string, statusCategory: string): string => {
+  const normalizedStatus = normalizeComparableText(status)
+  const normalizedStatusCategory = normalizeComparableText(statusCategory)
+
+  if (normalizedStatus === 'for testing') {
+    return 'For Testing'
+  }
+
+  if (jiraToDoStatusCategoryNames.has(normalizedStatusCategory)) {
+    return 'To Do'
+  }
+
+  if (jiraInProgressStatusCategoryNames.has(normalizedStatusCategory)) {
+    return 'In Progress'
+  }
+
+  return status.trim() || 'Unknown'
+}
 
 const normalizeTicketPrefix = (value: unknown): string =>
   typeof value === 'string' ? value.toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 20) : ''
@@ -594,18 +618,26 @@ const mapJiraIssues = (
       const id = toSafeString(issue.id, key)
       const fields = isRecord(issue.fields) ? issue.fields : {}
       const statusField = isRecord(fields.status) ? fields.status : {}
+      const statusCategoryField = isRecord(statusField.statusCategory) ? statusField.statusCategory : {}
       const assigneeField = isRecord(fields.assignee) ? fields.assignee : {}
       const priorityField = isRecord(fields.priority) ? fields.priority : {}
       const issueTypeField = isRecord(fields.issuetype) ? fields.issuetype : {}
       const reporterField = isRecord(fields.reporter) ? fields.reporter : {}
       const sprintField = sprintFieldId && fields[sprintFieldId] !== undefined ? fields[sprintFieldId] : fields.sprint
+      const rawStatus = toSafeString(statusField.name, 'Unknown')
+      const rawStatusCategory =
+        typeof statusCategoryField.key === 'string'
+          ? statusCategoryField.key
+          : typeof statusCategoryField.name === 'string'
+            ? statusCategoryField.name
+            : ''
 
       return {
         id,
         key,
         summary: toSafeString(fields.summary, '(no summary)'),
         description: toJiraDescriptionText(fields.description),
-        status: toSafeString(statusField.name, 'Unknown'),
+        status: normalizeJiraStatus(rawStatus, rawStatusCategory),
         assignee: typeof assigneeField.displayName === 'string' ? assigneeField.displayName : null,
         priority: typeof priorityField.name === 'string' ? priorityField.name : null,
         issueType: toSafeString(issueTypeField.name, 'Issue'),
@@ -702,6 +734,8 @@ const toDateMs = (value: string | null): number => {
 }
 
 const isAllowedJiraIssueType = (issueType: string): boolean => jiraAllowedIssueTypes.has(issueType.trim().toLowerCase())
+
+const isAllowedJiraIssueStatus = (status: string): boolean => jiraAllowedIssueStatuses.has(normalizeComparableText(status))
 
 const groupIssuesBySprint = (
   issues: JiraIssueWithSprint[],
@@ -885,9 +919,15 @@ const fetchJiraIssues = async (request: Request): Promise<JiraIssueResult | Resp
     return backlogIssuesResult
   }
 
-  const filteredCurrentIssues = currentIssuesResult.filter((issue) => isAllowedJiraIssueType(issue.issueType))
-  const filteredNextIssues = nextIssuesResult.filter((issue) => isAllowedJiraIssueType(issue.issueType))
-  const filteredBacklogIssues = backlogIssuesResult.filter((issue) => isAllowedJiraIssueType(issue.issueType))
+  const filteredCurrentIssues = currentIssuesResult.filter(
+    (issue) => isAllowedJiraIssueType(issue.issueType) && isAllowedJiraIssueStatus(issue.status),
+  )
+  const filteredNextIssues = nextIssuesResult.filter(
+    (issue) => isAllowedJiraIssueType(issue.issueType) && isAllowedJiraIssueStatus(issue.status),
+  )
+  const filteredBacklogIssues = backlogIssuesResult.filter(
+    (issue) => isAllowedJiraIssueType(issue.issueType) && isAllowedJiraIssueStatus(issue.status),
+  )
 
   const groups: JiraIssueGroup[] = [
     ...groupIssuesBySprint(filteredCurrentIssues, 'current'),
