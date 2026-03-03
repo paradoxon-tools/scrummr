@@ -598,14 +598,14 @@ input.busy {
   margin: 0.35rem 0 0;
   padding: 0;
   display: grid;
-  gap: 0.3rem;
+  gap: 0;
 }
 
 .jira-list li {
-  border: 1px solid #d2deef;
-  border-radius: 8px;
-  padding: 0.35rem 0.45rem;
-  background: #f8fbff;
+  border: 0;
+  border-bottom: 1px solid #d2deef;
+  padding: 0.28rem 0.1rem;
+  background: transparent;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.4rem;
@@ -613,8 +613,12 @@ input.busy {
 }
 
 .jira-list li.selected {
-  border-color: #7fa8d9;
+  border-bottom-color: #7fa8d9;
   background: #edf5ff;
+}
+
+.jira-list li:last-child {
+  border-bottom: 0;
 }
 
 .jira-issue-select {
