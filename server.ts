@@ -232,6 +232,21 @@ const toSafeString = (value: unknown, fallback: string): string =>
 
 const normalizeComparableText = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ')
 
+const normalizeFieldLabelForMatch = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+const normalizeFieldIdForMatch = (value: string): string => normalizeFieldId(value).replace(/[._-]+/g, ' ').trim()
+
+const shouldKeepEmptyJiraField = (fieldId: string, fieldLabel: string): boolean => {
+  const normalizedId = normalizeFieldIdForMatch(normalizeJiraFieldId(fieldId))
+  const normalizedLabel = normalizeFieldLabelForMatch(fieldLabel)
+
+  if (normalizedId === 'description' || normalizedLabel === 'description' || normalizedLabel === 'beschreibung') {
+    return true
+  }
+
+  return normalizedId === 'it umsetzung' || normalizedLabel === 'it umsetzung'
+}
+
 const normalizeJiraStatus = (status: string, statusCategory: string): string => {
   const normalizedStatus = normalizeComparableText(status)
   const normalizedStatusCategory = normalizeComparableText(statusCategory)
@@ -332,14 +347,19 @@ const buildJiraEditorFields = (
 
   const addField = (rawId: string, rawLabel: string, rawValue: unknown): void => {
     const normalizedId = normalizeFieldId(normalizeJiraFieldId(rawId))
+    const normalizedLabel = normalizeFieldLabel(rawLabel, rawId)
     const value = extractJiraFieldText(rawValue)
-    if (!normalizedId || !value || mapped.has(normalizedId)) {
+    if (!normalizedId || mapped.has(normalizedId)) {
+      return
+    }
+
+    if (!value && !shouldKeepEmptyJiraField(rawId, normalizedLabel)) {
       return
     }
 
     mapped.set(normalizedId, {
       id: normalizedId,
-      label: normalizeFieldLabel(rawLabel, rawId),
+      label: normalizedLabel,
       value,
     })
   }

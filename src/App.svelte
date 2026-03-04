@@ -235,7 +235,7 @@
           label: toStringOrEmpty(field.label),
           value: toStringOrEmpty(field.value),
         }))
-        .filter((field) => field.id !== '' && field.label !== '' && field.value !== '')
+        .filter((field) => field.id !== '' && field.label !== '')
     }
 
     return payload
@@ -345,6 +345,11 @@
 
   const normalizeEditorFieldId = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 80)
 
+  const normalizeFieldIdForMatch = (value: string): string =>
+    normalizeEditorFieldId(value)
+      .replace(/[._-]+/g, ' ')
+      .trim()
+
   const hiddenIssueFieldIds = new Set([
     'summary',
     'status',
@@ -391,6 +396,21 @@
   ])
 
   const normalizeFieldLabelForMatch = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+  const getIssueFieldPriority = (field: IssueEditorField): number => {
+    const normalizedId = normalizeFieldIdForMatch(field.id)
+    const normalizedLabel = normalizeFieldLabelForMatch(field.label)
+
+    if (normalizedId === 'description' || normalizedLabel === 'description' || normalizedLabel === 'beschreibung') {
+      return 0
+    }
+
+    if (normalizedId === 'it umsetzung' || normalizedLabel === 'it umsetzung') {
+      return 1
+    }
+
+    return 2
+  }
 
   const hiddenIssueFieldLabels = new Set([
     'summary',
@@ -1385,7 +1405,13 @@
   $: selectedIssueFromJira = selectedIssueId && jiraIssues
     ? jiraIssues.groups.flatMap((group) => group.issues).find((issue) => issue.id === selectedIssueId) ?? null
     : null
-  $: visibleIssueFields = selectedIssueDraft ? selectedIssueDraft.fields.filter((field) => !isIssueFieldHidden(field)) : []
+  $: visibleIssueFields = selectedIssueDraft
+    ? selectedIssueDraft.fields
+        .filter((field) => !isIssueFieldHidden(field))
+        .map((field, index) => ({ field, index, priority: getIssueFieldPriority(field) }))
+        .sort((a, b) => a.priority - b.priority || a.index - b.index)
+        .map((entry) => entry.field)
+    : []
   $: selectedIssueGroup = selectedIssueId && jiraIssues
     ? jiraIssues.groups.find((group) => group.issues.some((issue) => issue.id === selectedIssueId)) ?? null
     : null
