@@ -46,6 +46,19 @@ export type JiraIssueGroup = {
 
 export type JiraIssueResult = {
   groups: JiraIssueGroup[]
+  quickFilters?: {
+    fields: Array<{
+      id: string
+      label: string
+    }>
+    badges: Array<{
+      id: string
+      fieldId: string
+      fieldLabel: string
+      value: string
+      count: number
+    }>
+  }
 }
 
 export type IssueEditorField = {

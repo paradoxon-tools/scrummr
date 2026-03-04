@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { auth } from '@clerk/nextjs/server'
 import { ConvexHttpClient } from 'convex/browser'
 import { api } from '../../../../convex/_generated/api.js'
 import type { IssueSubtask, JiraIssue, JiraIssueGroup, JiraIssueResult, JiraSprint } from '../../../../src/lib/protocol'
@@ -8,6 +9,7 @@ type JiraConfigPayload = {
   email?: string
   apiToken?: string
   ticketPrefix?: string
+  quickFilterFieldIds?: unknown
 }
 
 type JiraIssueWithSprint = JiraIssue & {
@@ -35,6 +37,35 @@ const normalizeIssueId = (value: unknown): string => (typeof value === 'string' 
 
 const normalizeTicketPrefix = (value: unknown): string =>
   typeof value === 'string' ? value.toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 20) : ''
+
+const normalizeQuickFilterFieldId = (value: unknown): string => {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]/g, '')
+    .slice(0, 80)
+}
+
+const parseQuickFilterFieldIds = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const unique = new Set<string>()
+  for (const entry of value) {
+    const normalized = normalizeQuickFilterFieldId(entry)
+    if (!normalized) {
+      continue
+    }
+    unique.add(normalized)
+  }
+
+  return [...unique]
+}
 
 const normalizeJiraOrigin = (value: unknown): string | null => {
   if (typeof value !== 'string') {
@@ -282,7 +313,11 @@ const parseJiraSubtasks = (jiraOrigin: string, value: unknown): IssueSubtask[] =
   return [...subtasksById.values()].slice(0, 100)
 }
 
-const buildIssueFields = (fields: Record<string, unknown>, normalizedStatus: string) => {
+const buildIssueFields = (
+  fields: Record<string, unknown>,
+  normalizedStatus: string,
+  quickFilterFieldIds: string[],
+): JiraIssue['fields'] => {
   const candidates: Array<{ id: string; label: string; value: unknown }> = [
     { id: 'summary', label: 'Summary', value: fields.summary },
     { id: 'description', label: 'Description', value: fields.description },
@@ -295,6 +330,20 @@ const buildIssueFields = (fields: Record<string, unknown>, normalizedStatus: str
     { id: 'updated', label: 'Updated', value: fields.updated },
   ]
 
+  const existingIds = new Set(candidates.map((entry) => entry.id))
+  for (const fieldId of quickFilterFieldIds) {
+    if (existingIds.has(fieldId)) {
+      continue
+    }
+
+    candidates.push({
+      id: fieldId,
+      label: fieldId,
+      value: fields[fieldId],
+    })
+    existingIds.add(fieldId)
+  }
+
   return candidates
     .map((entry) => ({
       id: entry.id,
@@ -304,7 +353,7 @@ const buildIssueFields = (fields: Record<string, unknown>, normalizedStatus: str
     .filter((entry) => entry.value !== '' || entry.id === 'description')
 }
 
-const mapJiraIssues = (jiraOrigin: string, payload: unknown): JiraIssueWithSprint[] | null => {
+const mapJiraIssues = (jiraOrigin: string, payload: unknown, quickFilterFieldIds: string[]): JiraIssueWithSprint[] | null => {
   if (!isRecord(payload) || !Array.isArray(payload.issues)) {
     return null
   }
@@ -344,7 +393,7 @@ const mapJiraIssues = (jiraOrigin: string, payload: unknown): JiraIssueWithSprin
         updatedAt: typeof fields.updated === 'string' ? fields.updated : null,
         url: `${jiraOrigin}/browse/${encodeURIComponent(key)}`,
         isEstimated: false,
-        fields: buildIssueFields(fields, normalizedStatus),
+        fields: buildIssueFields(fields, normalizedStatus, quickFilterFieldIds),
         sprint: parseIssueSprint(fields.sprint),
         subtasks: parseJiraSubtasks(jiraOrigin, fields.subtasks),
       }
@@ -430,6 +479,7 @@ const fetchAllSearchIssues = async (
   jiraOrigin: string,
   authorization: string,
   jql: string,
+  quickFilterFieldIds: string[],
 ): Promise<JiraIssueWithSprint[] | NextResponse> => {
   let startAt = 0
   let page = 0
@@ -463,7 +513,7 @@ const fetchAllSearchIssues = async (
       return NextResponse.json({ message: jiraErrorMessage(response.status, payload) }, { status: response.status })
     }
 
-    const pageIssues = mapJiraIssues(jiraOrigin, payload)
+    const pageIssues = mapJiraIssues(jiraOrigin, payload, quickFilterFieldIds)
     if (!pageIssues) {
       return NextResponse.json({ message: 'Unexpected Jira issue response format.' }, { status: 502 })
     }
@@ -491,11 +541,109 @@ const fetchAllSearchIssues = async (
 const isAllowedJiraIssueType = (issueType: string): boolean => jiraAllowedIssueTypes.has(issueType.trim().toLowerCase())
 const isAllowedJiraIssueStatus = (status: string): boolean => jiraAllowedIssueStatuses.has(normalizeComparableText(status))
 
+const splitQuickFilterValues = (value: string): string[] => {
+  if (!value.trim()) {
+    return []
+  }
+
+  const unique = new Map<string, string>()
+  for (const part of value.split(/[\n,]/g)) {
+    const trimmed = part.trim()
+    if (!trimmed) {
+      continue
+    }
+    const normalized = trimmed.toLowerCase()
+    if (!unique.has(normalized)) {
+      unique.set(normalized, trimmed)
+    }
+  }
+
+  return [...unique.values()]
+}
+
+const buildQuickFilterData = (
+  groups: JiraIssueGroup[],
+  quickFilterFieldIds: string[],
+): NonNullable<JiraIssueResult['quickFilters']> => {
+  const fieldLabels = new Map<string, string>()
+  const countsByField = new Map<string, Map<string, { value: string; count: number }>>()
+
+  for (const fieldId of quickFilterFieldIds) {
+    fieldLabels.set(fieldId, fieldId)
+    countsByField.set(fieldId, new Map())
+  }
+
+  for (const group of groups) {
+    for (const issue of group.issues) {
+      for (const fieldId of quickFilterFieldIds) {
+        const issueField = issue.fields.find((field) => normalizeQuickFilterFieldId(field.id) === fieldId)
+        if (!issueField) {
+          continue
+        }
+
+        if (issueField.label.trim()) {
+          fieldLabels.set(fieldId, issueField.label.trim())
+        }
+
+        const fieldCounts = countsByField.get(fieldId)
+        if (!fieldCounts) {
+          continue
+        }
+
+        for (const filterValue of splitQuickFilterValues(issueField.value)) {
+          const key = filterValue.toLowerCase()
+          const existing = fieldCounts.get(key)
+          if (existing) {
+            existing.count += 1
+          } else {
+            fieldCounts.set(key, { value: filterValue, count: 1 })
+          }
+        }
+      }
+    }
+  }
+
+  const badges = quickFilterFieldIds
+    .flatMap((fieldId) => {
+      const fieldLabel = fieldLabels.get(fieldId) ?? fieldId
+      const values = countsByField.get(fieldId)
+      if (!values) {
+        return []
+      }
+
+      return [...values.values()].map((entry) => ({
+        id: `${fieldId}:${entry.value.toLowerCase()}`,
+        fieldId,
+        fieldLabel,
+        value: entry.value,
+        count: entry.count,
+      }))
+    })
+    .sort((a, b) => {
+      if (a.fieldLabel !== b.fieldLabel) {
+        return a.fieldLabel.localeCompare(b.fieldLabel)
+      }
+      if (a.count !== b.count) {
+        return b.count - a.count
+      }
+      return a.value.localeCompare(b.value)
+    })
+
+  return {
+    fields: quickFilterFieldIds.map((fieldId) => ({
+      id: fieldId,
+      label: fieldLabels.get(fieldId) ?? fieldId,
+    })),
+    badges,
+  }
+}
+
 const fetchJiraIssues = async (body: JiraConfigPayload): Promise<JiraLoadResult | NextResponse> => {
   const jiraOrigin = normalizeJiraOrigin(body.baseUrl)
   const email = typeof body.email === 'string' ? body.email.trim() : ''
   const apiToken = typeof body.apiToken === 'string' ? body.apiToken.trim() : ''
   const ticketPrefix = normalizeTicketPrefix(body.ticketPrefix)
+  const quickFilterFieldIds = parseQuickFilterFieldIds(body.quickFilterFieldIds)
 
   if (!jiraOrigin || !email || !apiToken || !ticketPrefix) {
     return NextResponse.json({ message: 'Jira URL, email, API token, and ticket prefix are required.' }, { status: 400 })
@@ -508,9 +656,9 @@ const fetchJiraIssues = async (body: JiraConfigPayload): Promise<JiraLoadResult 
   const backlogJql = `${projectClause} AND sprint is EMPTY ORDER BY Rank ASC, created ASC`
 
   const [currentIssuesResult, nextIssuesResult, backlogIssuesResult] = await Promise.all([
-    fetchAllSearchIssues(jiraOrigin, authorization, currentSprintJql),
-    fetchAllSearchIssues(jiraOrigin, authorization, nextSprintJql),
-    fetchAllSearchIssues(jiraOrigin, authorization, backlogJql),
+    fetchAllSearchIssues(jiraOrigin, authorization, currentSprintJql, quickFilterFieldIds),
+    fetchAllSearchIssues(jiraOrigin, authorization, nextSprintJql, quickFilterFieldIds),
+    fetchAllSearchIssues(jiraOrigin, authorization, backlogJql, quickFilterFieldIds),
   ])
 
   if (currentIssuesResult instanceof NextResponse) {
@@ -544,6 +692,8 @@ const fetchJiraIssues = async (body: JiraConfigPayload): Promise<JiraLoadResult 
     })
   }
 
+  const quickFilters = buildQuickFilterData(groups, quickFilterFieldIds)
+
   const jiraSubtasksByIssueId: Record<string, IssueSubtask[]> = {}
   const registerIssueSubtasks = (issue: JiraIssueWithSprint): void => {
     const issueId = normalizeIssueId(issue.id)
@@ -565,7 +715,7 @@ const fetchJiraIssues = async (body: JiraConfigPayload): Promise<JiraLoadResult 
   }
 
   return {
-    jiraIssues: { groups },
+    jiraIssues: { groups, quickFilters },
     jiraSubtasksByIssueId,
   }
 }
@@ -577,6 +727,11 @@ const resolveConvexUrl = (): string => {
 }
 
 export async function POST(request: Request) {
+  const { userId } = await auth()
+  if (!userId) {
+    return NextResponse.json({ message: 'You must be signed in to start a planning session.' }, { status: 401 })
+  }
+
   let body: JiraConfigPayload
   try {
     body = (await request.json()) as JiraConfigPayload

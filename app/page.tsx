@@ -187,7 +187,45 @@ const parseJiraIssueResult = (payload: unknown): JiraIssueResult | null => {
     })
   }
 
-  return { groups }
+  const quickFilters = isRecord(payload.quickFilters) ? payload.quickFilters : null
+  const parsedQuickFilterFields = quickFilters && Array.isArray(quickFilters.fields)
+    ? quickFilters.fields
+        .filter((field): field is Record<string, unknown> => isRecord(field))
+        .map((field) => ({
+          id: normalizeEditorFieldId(toStringOrEmpty(field.id)),
+          label: toStringOrEmpty(field.label).trim().slice(0, 80),
+        }))
+        .filter((field) => field.id !== '' && field.label !== '')
+    : []
+
+  const parsedQuickFilterBadges = quickFilters && Array.isArray(quickFilters.badges)
+    ? quickFilters.badges
+        .filter((badge): badge is Record<string, unknown> => isRecord(badge))
+        .map((badge) => {
+          const fieldId = normalizeEditorFieldId(toStringOrEmpty(badge.fieldId))
+          const value = toStringOrEmpty(badge.value).trim().slice(0, 120)
+          const count = Number.isFinite(Number(badge.count)) ? Math.max(0, Math.floor(Number(badge.count))) : 0
+          return {
+            id: toStringOrEmpty(badge.id).trim() || `${fieldId}:${value.toLowerCase()}`,
+            fieldId,
+            fieldLabel: toStringOrEmpty(badge.fieldLabel).trim().slice(0, 80),
+            value,
+            count,
+          }
+        })
+        .filter((badge) => badge.fieldId !== '' && badge.value !== '' && badge.count > 0)
+    : []
+
+  return {
+    groups,
+    quickFilters:
+      parsedQuickFilterFields.length > 0 || parsedQuickFilterBadges.length > 0
+        ? {
+            fields: parsedQuickFilterFields,
+            badges: parsedQuickFilterBadges,
+          }
+        : undefined,
+  }
 }
 
 const jiraCategoryLabel = (category: JiraIssueCategory): string => {
@@ -201,6 +239,18 @@ const jiraCategoryLabel = (category: JiraIssueCategory): string => {
 }
 
 const formatJiraIssueCount = (count: number): string => `${count} issue${count === 1 ? '' : 's'}`
+
+const extractQuickFilterValues = (value: string): string[] => {
+  const unique = new Set<string>()
+  for (const part of value.split(/[\n,]/g)) {
+    const normalized = part.trim().toLowerCase()
+    if (!normalized) {
+      continue
+    }
+    unique.add(normalized)
+  }
+  return [...unique]
+}
 
 const normalizeFieldLabelForMatch = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 const normalizeFieldIdForMatch = (value: string): string => normalizeEditorFieldId(value).replace(/[._-]+/g, ' ').trim()
@@ -400,6 +450,7 @@ export default function HomePage() {
   const [isCrdtDebugOpen, setIsCrdtDebugOpen] = useState(false)
   const [localSelectedIssueIdOverride, setLocalSelectedIssueIdOverride] = useState<string | null>(null)
   const [isFollowingOrchestrator, setIsFollowingOrchestrator] = useState(true)
+  const [activeQuickFilterBadgeId, setActiveQuickFilterBadgeId] = useState<string | null>(null)
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
 
   const [hasAutoCollapsedJiraConfig, setHasAutoCollapsedJiraConfig] = useState(false)
@@ -1650,6 +1701,19 @@ export default function HomePage() {
     jiraFieldLastRequestedValueRef.current.clear()
   }, [jiraIssues])
 
+  useEffect(() => {
+    if (!activeQuickFilterBadgeId) {
+      return
+    }
+
+    const badges = jiraIssues?.quickFilters?.badges ?? []
+    if (badges.some((badge) => badge.id === activeQuickFilterBadgeId)) {
+      return
+    }
+
+    setActiveQuickFilterBadgeId(null)
+  }, [jiraIssues, activeQuickFilterBadgeId])
+
   const loadedJiraTicketCount = useMemo(
     () => (jiraIssues ? jiraIssues.groups.reduce((count, group) => count + group.issues.length, 0) : 0),
     [jiraIssues],
@@ -1800,6 +1864,42 @@ export default function HomePage() {
         : null,
     [selectedIssueId, jiraIssues],
   )
+
+  const quickFilterBadges = useMemo(() => jiraIssues?.quickFilters?.badges ?? [], [jiraIssues])
+
+  const activeQuickFilterBadge = useMemo(
+    () => (activeQuickFilterBadgeId ? quickFilterBadges.find((badge) => badge.id === activeQuickFilterBadgeId) ?? null : null),
+    [quickFilterBadges, activeQuickFilterBadgeId],
+  )
+
+  const visibleJiraGroups = useMemo(() => {
+    if (!jiraIssues) {
+      return []
+    }
+
+    if (!activeQuickFilterBadge) {
+      return jiraIssues.groups
+    }
+
+    const targetFieldId = normalizeEditorFieldId(activeQuickFilterBadge.fieldId)
+    const targetValue = activeQuickFilterBadge.value.trim().toLowerCase()
+    if (!targetFieldId || !targetValue) {
+      return jiraIssues.groups
+    }
+
+    return jiraIssues.groups
+      .map((group) => ({
+        ...group,
+        issues: group.issues.filter((issue) => {
+          const candidateField = issue.fields.find((field) => normalizeEditorFieldId(field.id) === targetFieldId)
+          if (!candidateField) {
+            return false
+          }
+          return extractQuickFilterValues(candidateField.value).includes(targetValue)
+        }),
+      }))
+      .filter((group) => group.issues.length > 0)
+  }, [jiraIssues, activeQuickFilterBadge])
 
   const orchestratorParticipant = useMemo(
     () =>
@@ -2316,6 +2416,30 @@ export default function HomePage() {
 
             {jiraError ? <p className="jira-error">{jiraError}</p> : jiraMessage ? <p className="jira-message">{jiraMessage}</p> : null}
 
+            {jiraIssues && quickFilterBadges.length > 0 ? (
+              <section className="quick-filter-panel" aria-label="Quick filters">
+                <div className="quick-filter-list">
+                  <button
+                    type="button"
+                    className={`quick-filter-badge${activeQuickFilterBadge ? '' : ' active'}`}
+                    onClick={() => setActiveQuickFilterBadgeId(null)}
+                  >
+                    All tickets
+                  </button>
+                  {quickFilterBadges.map((badge) => (
+                    <button
+                      key={badge.id}
+                      type="button"
+                      className={`quick-filter-badge${activeQuickFilterBadgeId === badge.id ? ' active' : ''}`}
+                      onClick={() => setActiveQuickFilterBadgeId(badge.id)}
+                    >
+                      {badge.fieldLabel}: {badge.value} ({badge.count})
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             <div
               className="jira-list-scroll"
               ref={(node) => {
@@ -2323,9 +2447,9 @@ export default function HomePage() {
               }}
             >
               {jiraIssues ? (
-                jiraIssues.groups.length > 0 ? (
+                visibleJiraGroups.length > 0 ? (
                   <div className="jira-buckets">
-                    {jiraIssues.groups.map((group) => (
+                    {visibleJiraGroups.map((group) => (
                       <article className="jira-bucket" key={group.id}>
                         <h3>
                           {group.name}
@@ -2351,7 +2475,11 @@ export default function HomePage() {
                     ))}
                   </div>
                 ) : (
-                  <p className="jira-empty">No Jira tickets found for current/future sprints or backlog.</p>
+                  <p className="jira-empty">
+                    {activeQuickFilterBadge
+                      ? `No tickets match ${activeQuickFilterBadge.fieldLabel}: ${activeQuickFilterBadge.value}.`
+                      : 'No Jira tickets found for current/future sprints or backlog.'}
+                  </p>
                 )
               ) : (
                 <p className="jira-empty">No Jira tickets loaded yet.</p>

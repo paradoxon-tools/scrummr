@@ -1041,6 +1041,32 @@ input.busy {
   font-size: 0.86rem;
 }
 
+.quick-filter-panel {
+  margin-top: 0.65rem;
+}
+
+.quick-filter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.34rem;
+}
+
+.quick-filter-badge {
+  border: 1px solid #bfd0ea;
+  border-radius: 999px;
+  background: #edf4ff;
+  color: #3f587d;
+  padding: 0.2rem 0.52rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.quick-filter-badge.active {
+  border-color: #8db8d0;
+  background: #dcf1fb;
+  color: #1f4e69;
+}
+
 .jira-form label {
   font-size: 0.78rem;
   text-transform: uppercase;
@@ -1353,6 +1379,18 @@ input.busy {
   background: #382a20;
   border-color: #8d6642;
   color: #e5b98a;
+}
+
+:root[data-theme='dark'] .quick-filter-badge {
+  background: #13233a;
+  border-color: #4c678f;
+  color: #c2d5f3;
+}
+
+:root[data-theme='dark'] .quick-filter-badge.active {
+  background: #103145;
+  border-color: #4c90b4;
+  color: #9ad8f6;
 }
 
 :root[data-theme='dark'] .orchestrator-follow-strip p {
