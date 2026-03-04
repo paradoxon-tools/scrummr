@@ -13,8 +13,6 @@ dist-ssr
 .next
 out
 *.local
-.vercel
-*.tsbuildinfo
 
 # Editor directories and files
 .vscode/*
