@@ -1,6 +1,6 @@
 # Scrummer v1
 
-Single-room scrum planning poker app built with Svelte 5 and Bun.
+Single-room scrum planning poker app built with Next.js and Bun.
 
 ## Features
 
@@ -37,13 +37,13 @@ bun run dev:server
 bun run dev
 ```
 
-The frontend runs on Vite's default port (`5173`) and connects to `ws://localhost:3101/ws`.
+The frontend runs on `http://localhost:5173` and connects to `ws://localhost:3101/ws`.
 
 ## Optional configuration
 
 - `WS_PORT` controls the Bun WebSocket server port (default `3101`).
-- `VITE_WS_URL` overrides the client WebSocket URL.
-- `VITE_API_BASE_URL` overrides the base URL for backend HTTP calls (used by Jira integration).
+- `NEXT_PUBLIC_WS_URL` overrides the client WebSocket URL.
+- `NEXT_PUBLIC_API_BASE_URL` overrides the base URL for backend HTTP calls (used by Jira integration).
 
 ## Jira integration notes
 

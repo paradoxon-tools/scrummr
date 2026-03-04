@@ -1,0 +1,126 @@
+'use client'
+
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { markdown } from '@codemirror/lang-markdown'
+import { Compartment, EditorState, type Extension } from '@codemirror/state'
+import { EditorView, keymap, placeholder as editorPlaceholder } from '@codemirror/view'
+import { useEffect, useRef } from 'react'
+import { yCollab } from 'y-codemirror.next'
+import type * as Y from 'yjs'
+
+type CodeMirrorFieldProps = {
+  value: string
+  minRows?: number
+  placeholder?: string
+  busy?: boolean
+  markdownMode?: boolean
+  yText?: Y.Text | null
+  onInput?: (value: string) => void
+  onFocus?: () => void
+  onBlur?: () => void
+}
+
+const createClassName = (busy: boolean): string => (busy ? 'code-field busy' : 'code-field')
+
+export default function CodeMirrorField({
+  value,
+  minRows = 3,
+  placeholder = '',
+  busy = false,
+  markdownMode = false,
+  yText = null,
+  onInput,
+  onFocus,
+  onBlur,
+}: CodeMirrorFieldProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const viewRef = useRef<EditorView | null>(null)
+  const applyingExternalRef = useRef(false)
+
+  const placeholderCompartmentRef = useRef(new Compartment())
+  const languageCompartmentRef = useRef(new Compartment())
+  const collabCompartmentRef = useRef(new Compartment())
+
+  const placeholderExtension = (): Extension => (placeholder ? editorPlaceholder(placeholder) : [])
+  const languageExtension = (): Extension => (markdownMode ? markdown() : [])
+  const collabExtension = (): Extension => (yText ? yCollab(yText, undefined) : [])
+
+  useEffect(() => {
+    if (!rootRef.current) {
+      return
+    }
+
+    const view = new EditorView({
+      parent: rootRef.current,
+      state: EditorState.create({
+        doc: value,
+        extensions: [
+          history(),
+          keymap.of([...defaultKeymap, ...historyKeymap]),
+          EditorView.lineWrapping,
+          placeholderCompartmentRef.current.of(placeholderExtension()),
+          languageCompartmentRef.current.of(languageExtension()),
+          collabCompartmentRef.current.of(collabExtension()),
+          EditorView.updateListener.of((update) => {
+            if (!update.docChanged || applyingExternalRef.current || yText) {
+              return
+            }
+
+            onInput?.(update.state.doc.toString())
+          }),
+          EditorView.domEventHandlers({
+            focus: () => {
+              onFocus?.()
+              return false
+            },
+            blur: () => {
+              onBlur?.()
+              return false
+            },
+          }),
+        ],
+      }),
+    })
+
+    viewRef.current = view
+
+    return () => {
+      view.destroy()
+      viewRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) {
+      return
+    }
+
+    if (!yText) {
+      const currentValue = view.state.doc.toString()
+      if (currentValue !== value) {
+        applyingExternalRef.current = true
+        view.dispatch({
+          changes: {
+            from: 0,
+            to: currentValue.length,
+            insert: value,
+          },
+        })
+        applyingExternalRef.current = false
+      }
+    }
+
+    view.dispatch({ effects: placeholderCompartmentRef.current.reconfigure(placeholderExtension()) })
+    view.dispatch({ effects: languageCompartmentRef.current.reconfigure(languageExtension()) })
+    view.dispatch({ effects: collabCompartmentRef.current.reconfigure(collabExtension()) })
+  }, [value, placeholder, markdownMode, yText])
+
+  return (
+    <div
+      ref={rootRef}
+      className={createClassName(busy)}
+      style={{ ['--cm-min-rows' as string]: String(Math.max(1, Math.floor(minRows))) }}
+    />
+  )
+}

@@ -34,6 +34,48 @@ textarea {
   font: inherit;
 }
 
+.code-field {
+  width: 100%;
+}
+
+.code-field .cm-editor {
+  border: 1px solid #c5d5ea;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.code-field .cm-editor.cm-focused {
+  outline: 2px solid rgba(70, 125, 197, 0.2);
+  border-color: #5c85bf;
+}
+
+.code-field .cm-gutters {
+  display: none;
+}
+
+.code-field .cm-scroller {
+  font-family: 'IBM Plex Mono', 'Fira Mono', 'Consolas', monospace;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+.code-field .cm-content,
+.code-field .cm-placeholder {
+  font-size: 0.84rem;
+  padding: 0.45rem 0.55rem;
+}
+
+.code-field .cm-content {
+  min-height: calc(var(--cm-min-rows) * 1.3rem);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.code-field.busy .cm-editor {
+  border-color: #d7b07a;
+  background: #fff5e8;
+}
+
 button {
   border: 0;
   border-radius: 12px;
