@@ -51,6 +51,35 @@ The frontend runs on `http://localhost:5173`.
 - `NEXT_PUBLIC_CONVEX_URL` points the app to your Convex deployment.
 - `NEXT_PUBLIC_API_BASE_URL` overrides the base URL for backend HTTP calls (used by Jira integration).
 
+## Deploy to Vercel with Convex
+
+This repo includes a `build:vercel` script that deploys Convex first, then builds Next.js:
+
+```bash
+bun run build:vercel
+```
+
+Set Vercel Build Command to:
+
+```bash
+bun run build:vercel
+```
+
+Set Vercel Install Command to:
+
+```bash
+bun install
+```
+
+Required Vercel environment variable:
+
+- `CONVEX_DEPLOY_KEY` (create a production deploy key in Convex Dashboard and add it in Vercel)
+
+Notes:
+
+- `NEXT_PUBLIC_CONVEX_URL` is injected during the build by `convex deploy --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL`.
+- You do not need to manually set `NEXT_PUBLIC_CONVEX_URL` in Vercel when using this build flow.
+
 ## Jira integration notes
 
 - Scrummer calls Jira through the Next.js route at `POST /api/jira/issues`.

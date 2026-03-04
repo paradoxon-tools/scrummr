@@ -9,6 +9,7 @@
     "dev:convex": "convex dev",
     "dev:all": "concurrently \"npm run dev:convex\" \"npm run dev\"",
     "build": "next build",
+    "build:vercel": "bunx convex deploy --cmd \"bun run build\" --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL",
     "start": "next start --hostname 0.0.0.0 --port 5173",
     "check": "next build && tsc -p tsconfig.server.json"
   },
