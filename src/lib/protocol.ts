@@ -116,7 +116,7 @@ export type ClientEvent =
   | { type: 'reroll_color' }
   | { type: 'set_vote'; vote: EstimateOption | null }
   | { type: 'reveal' }
-  | { type: 'next_ticket' }
+  | { type: 'next_ticket'; nextIssueId?: string | null }
   | {
       type: 'select_issue'
       issueId: string

@@ -1589,11 +1589,24 @@ export default function HomePage() {
 
   const revealOrNextTicket = (): void => {
     if (roomState.revealed) {
+      const nextIssueId = (() => {
+        if (visibleIssueOrder.length === 0) {
+          return null
+        }
+
+        const currentIndex = selectedIssueId ? visibleIssueOrder.indexOf(selectedIssueId) : -1
+        if (currentIndex < 0) {
+          return visibleIssueOrder[0]
+        }
+
+        return visibleIssueOrder[(currentIndex + 1) % visibleIssueOrder.length]
+      })()
+
       if (isCurrentUserOrchestrator()) {
         orchestratorFocusedTargetIdRef.current = null
         clearOrchestratorScrollSyncTimer()
       }
-      send({ type: 'next_ticket' })
+      send({ type: 'next_ticket', nextIssueId })
       return
     }
     send({ type: 'reveal' })
@@ -1900,6 +1913,11 @@ export default function HomePage() {
       }))
       .filter((group) => group.issues.length > 0)
   }, [jiraIssues, activeQuickFilterBadge])
+
+  const visibleIssueOrder = useMemo(
+    () => visibleJiraGroups.flatMap((group) => group.issues.map((issue) => issue.id)),
+    [visibleJiraGroups],
+  )
 
   const orchestratorParticipant = useMemo(
     () =>

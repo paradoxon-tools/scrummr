@@ -585,6 +585,13 @@ export const sendEvent = mutation({
           return { ok: false, message: 'Display name cannot be empty.' }
         }
 
+        if (!room.jiraIssues) {
+          return {
+            ok: false,
+            message: 'Planning session is not open yet. Ask the facilitator to start it from the dashboard.',
+          }
+        }
+
         if (participant) {
           await ctx.db.patch(participant._id, { name: normalizedName })
         } else {
@@ -816,6 +823,17 @@ export const sendEvent = mutation({
           if (entry.vote !== null) {
             await ctx.db.patch(entry._id, { vote: null })
           }
+        }
+
+        const canControlTicketFlow = canClientControlTicketFlow(room, clientId)
+        const requestedNextIssueId = typeof event.nextIssueId === 'string' ? normalizeIssueId(event.nextIssueId) : ''
+        if (
+          canControlTicketFlow &&
+          requestedNextIssueId &&
+          ensureSelectedIssueFromShared(room, requestedNextIssueId, null)
+        ) {
+          await persistRoom(ctx, room)
+          return { ok: true }
         }
 
         selectNextSharedIssue(room)
