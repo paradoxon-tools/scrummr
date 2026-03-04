@@ -91,6 +91,12 @@ export type IssueWorkspaceSnapshot = {
   presence: IssuePresenceSnapshot[]
 }
 
+export type OrchestratorViewSnapshot = {
+  issueId: string | null
+  targetId: string | null
+  scrollRatio: number
+}
+
 export type ClientEvent =
   | { type: 'join'; name: string }
   | { type: 'update_name'; name: string }
@@ -145,6 +151,12 @@ export type ClientEvent =
       targetId: string
       active: boolean
     }
+  | {
+      type: 'set_orchestrator_view'
+      issueId: string | null
+      targetId: string | null
+      scrollRatio: number
+    }
 
 export type ParticipantView = {
   id: string
@@ -160,6 +172,7 @@ export type RoomStateSnapshot = {
   myId: string
   myVote: EstimateOption | null
   orchestratorId: string | null
+  orchestratorView: OrchestratorViewSnapshot
   participants: ParticipantView[]
   issueWorkspace: IssueWorkspaceSnapshot
   jiraIssues: JiraIssueResult | null

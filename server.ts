@@ -12,6 +12,7 @@ import {
   type JiraIssueGroup,
   type JiraIssueResult,
   type JiraSprint,
+  type OrchestratorViewSnapshot,
   type RoomStateSnapshot,
   type ServerEvent,
 } from './src/lib/protocol'
@@ -81,6 +82,12 @@ const issueCrdtUpdateMaxBytes = 1024 * 256
 let revealed = false
 let selectedIssueId: string | null = null
 let orchestratorId: string | null = null
+const createEmptyOrchestratorView = (): OrchestratorViewSnapshot => ({
+  issueId: null,
+  targetId: null,
+  scrollRatio: 0,
+})
+let orchestratorView: OrchestratorViewSnapshot = createEmptyOrchestratorView()
 
 const issueDrafts = new Map<string, IssueDraftSnapshot>()
 const issueFieldCrdtsByIssue = new Map<string, Map<string, IssueFieldCrdtState>>()
@@ -182,6 +189,55 @@ const normalizeIssuePresenceTargetId = (value: unknown): string => {
     .toLowerCase()
     .replace(/[^a-z0-9:._-]/g, '_')
     .slice(0, issuePresenceTargetIdMaxLength)
+}
+
+const normalizeScrollRatio = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0
+  }
+
+  if (value < 0) {
+    return 0
+  }
+
+  if (value > 1) {
+    return 1
+  }
+
+  return value
+}
+
+const canClientControlTicketFlow = (clientId: string): boolean => orchestratorId === null || orchestratorId === clientId
+
+const resetOrchestratorView = (issueId: string | null = selectedIssueId): void => {
+  orchestratorView = {
+    issueId,
+    targetId: null,
+    scrollRatio: 0,
+  }
+}
+
+const setOrchestratorView = (nextView: OrchestratorViewSnapshot): boolean => {
+  const normalizedIssueId = nextView.issueId ? normalizeIssueId(nextView.issueId) : null
+  const normalizedTargetId = nextView.targetId ? normalizeIssuePresenceTargetId(nextView.targetId) : null
+  const normalizedScrollRatio = normalizeScrollRatio(nextView.scrollRatio)
+
+  const changed =
+    orchestratorView.issueId !== normalizedIssueId ||
+    orchestratorView.targetId !== normalizedTargetId ||
+    orchestratorView.scrollRatio !== normalizedScrollRatio
+
+  if (!changed) {
+    return false
+  }
+
+  orchestratorView = {
+    issueId: normalizedIssueId,
+    targetId: normalizedTargetId,
+    scrollRatio: normalizedScrollRatio,
+  }
+
+  return true
 }
 
 const normalizeFieldLabel = (value: unknown, fallback: string): string => {
@@ -1204,6 +1260,7 @@ const ensureSelectedIssueFromShared = (issueId: string, updatedBy: string | null
     jiraSubtasksByIssueId.get(normalizedIssueId) ?? [],
   )
   selectedIssueId = normalizedIssueId
+  resetOrchestratorView(normalizedIssueId)
   return true
 }
 
@@ -1211,6 +1268,7 @@ const selectFirstSharedIssue = (): void => {
   const entries = flattenSharedIssueEntries()
   if (entries.length === 0) {
     selectedIssueId = null
+    resetOrchestratorView(null)
     return
   }
 
@@ -1221,6 +1279,7 @@ const selectNextSharedIssue = (): void => {
   const entries = flattenSharedIssueEntries()
   if (entries.length === 0) {
     selectedIssueId = null
+    resetOrchestratorView(null)
     return
   }
 
@@ -1574,6 +1633,7 @@ const makeSnapshot = (clientId: string): RoomStateSnapshot => {
     myId: clientId,
     myVote: users.get(clientId)?.vote ?? null,
     orchestratorId,
+    orchestratorView: { ...orchestratorView },
     participants,
     issueWorkspace: toWorkspaceSnapshot(),
     jiraIssues: sharedJiraIssues ? cloneJiraIssueResult(sharedJiraIssues) : null,
@@ -1765,6 +1825,7 @@ const server = Bun.serve<SocketData>({
             users.set(clientId, { name: normalizedName, colorHue: pickDistinctHue(), vote: null })
             if (!orchestratorId && sharedJiraIssues) {
               orchestratorId = clientId
+              resetOrchestratorView(selectedIssueId)
             }
           }
 
@@ -1825,7 +1886,12 @@ const server = Bun.serve<SocketData>({
 
           const fields = normalizeIssueEditorFields(event.fields)
           ensureIssueDraft(issueId, issueKey, issueUrl, fields, clientId, jiraSubtasksByIssueId.get(issueId) ?? [])
-          selectedIssueId = issueId
+          if (canClientControlTicketFlow(clientId)) {
+            selectedIssueId = issueId
+            if (orchestratorId === clientId || orchestratorId === null) {
+              resetOrchestratorView(issueId)
+            }
+          }
           broadcastSnapshots()
           broadcastIssueCrdtBootstrap(issueId)
           return
@@ -1870,7 +1936,6 @@ const server = Bun.serve<SocketData>({
 
           field.value = normalizeIssueText(fieldState.text.toString())
           touchIssueDraft(draft, clientId)
-          selectedIssueId = issueId
           broadcastIssueCrdtDelta(issueId, fieldId, field.label, update, clientId, draft.updatedAt)
           return
         }
@@ -1912,7 +1977,6 @@ const server = Bun.serve<SocketData>({
           draftField.value = normalizeIssueText(fieldState.text.toString())
 
           touchIssueDraft(draft, clientId)
-          selectedIssueId = issueId
           if (producedUpdate) {
             broadcastIssueCrdtDelta(issueId, draftField.id, draftField.label, producedUpdate, clientId, draft.updatedAt)
           }
@@ -1950,7 +2014,6 @@ const server = Bun.serve<SocketData>({
           })
 
           touchIssueDraft(draft, clientId)
-          selectedIssueId = issueId
           broadcastSnapshots()
           return
         }
@@ -1998,7 +2061,6 @@ const server = Bun.serve<SocketData>({
           }
 
           touchIssueDraft(draft, clientId)
-          selectedIssueId = issueId
           broadcastSnapshots()
           return
         }
@@ -2030,7 +2092,6 @@ const server = Bun.serve<SocketData>({
           draft.subtasks = nextSubtasks
           clearIssuePresenceByPrefix(issueId, `subtask:${subtaskId}:`)
           touchIssueDraft(draft, clientId)
-          selectedIssueId = issueId
           broadcastSnapshots()
           return
         }
@@ -2053,6 +2114,42 @@ const server = Bun.serve<SocketData>({
           }
 
           const changed = setIssuePresenceState(clientId, issueId, targetId, event.active)
+          if (!changed) {
+            return
+          }
+
+          broadcastSnapshots()
+          return
+        }
+        case 'set_orchestrator_view': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before sharing orchestrator view state.' })
+            return
+          }
+
+          if (!orchestratorId || orchestratorId !== clientId) {
+            return
+          }
+
+          const issueId = event.issueId ? normalizeIssueId(event.issueId) : null
+          const targetId = event.targetId ? normalizeIssuePresenceTargetId(event.targetId) : null
+
+          if (event.issueId !== null && !issueId) {
+            send(ws, { type: 'server_error', message: 'Orchestrator view issue id is invalid.' })
+            return
+          }
+
+          if (event.targetId !== null && !targetId) {
+            send(ws, { type: 'server_error', message: 'Orchestrator view target id is invalid.' })
+            return
+          }
+
+          const changed = setOrchestratorView({
+            issueId,
+            targetId: issueId ? targetId : null,
+            scrollRatio: normalizeScrollRatio(event.scrollRatio),
+          })
           if (!changed) {
             return
           }
@@ -2091,7 +2188,9 @@ const server = Bun.serve<SocketData>({
       sockets.delete(ws.data.id)
       users.delete(ws.data.id)
       if (orchestratorId === ws.data.id) {
-        orchestratorId = null
+        const [nextOrchestratorId] = users.keys()
+        orchestratorId = nextOrchestratorId ?? null
+        resetOrchestratorView(orchestratorId ? selectedIssueId : null)
       }
       clearClientIssuePresence(ws.data.id)
 
@@ -2110,6 +2209,7 @@ const server = Bun.serve<SocketData>({
         sharedJiraIssues = null
         jiraSubtasksByIssueId.clear()
         estimatedIssueIds.clear()
+        orchestratorView = createEmptyOrchestratorView()
       }
 
       broadcastSnapshots()

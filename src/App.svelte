@@ -42,6 +42,8 @@
   const CRDT_UPDATE_MAX_BYTES = 1024 * 256
   const CRDT_REMOTE_ORIGIN = Symbol('crdt-remote')
   const CRDT_BOOTSTRAP_ORIGIN = Symbol('crdt-bootstrap')
+  const FOLLOW_RESUME_DELAY_MS = 30_000
+  const ORCHESTRATOR_SCROLL_SYNC_DELAY_MS = 90
 
   const createEmptyIssueWorkspace = (): RoomStateSnapshot['issueWorkspace'] => ({
     selectedIssueId: null,
@@ -49,15 +51,24 @@
     presence: [],
   })
 
+  const createEmptyOrchestratorView = (): RoomStateSnapshot['orchestratorView'] => ({
+    issueId: null,
+    targetId: null,
+    scrollRatio: 0,
+  })
+
   const createEmptyState = (): RoomStateSnapshot => ({
     revealed: false,
     myId: '',
     myVote: null,
     orchestratorId: null,
+    orchestratorView: createEmptyOrchestratorView(),
     participants: [],
     issueWorkspace: createEmptyIssueWorkspace(),
     jiraIssues: null,
   })
+
+  type FollowSuspensionReason = 'none' | 'interaction' | 'ticket_selection'
 
   const createDefaultJiraConfig = (): JiraConfig => ({
     baseUrl: '',
@@ -98,6 +109,21 @@
   let rawTicketDataIssueId: string | null = null
   let shouldAutoLoadJiraAfterConnect = false
   const issueFieldDocsByIssue = new Map<string, Map<string, IssueFieldDoc>>()
+  let selectedIssueId: string | null = null
+  let localSelectedIssueIdOverride: string | null = null
+  let isFollowingOrchestrator = true
+  let followSuspensionReason: FollowSuspensionReason = 'none'
+  let followResumeTimer: number | undefined
+  let followResumeDeadline = 0
+  let followSecondsRemaining = 0
+  let followCountdownInterval: number | undefined
+  let isApplyingFollowScroll = false
+  let orchestratorFocusedTargetId: string | null = null
+  let orchestratorScrollSyncTimer: number | undefined
+  let pendingOrchestratorScrollRatio: number | null = null
+  let lastSentOrchestratorViewIssueId: string | null = null
+  let lastSentOrchestratorViewTargetId: string | null = null
+  let lastSentOrchestratorScrollRatio = -1
 
   const socketUrl = (): string => {
     const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim()
@@ -811,9 +837,263 @@
     return normalizedId === 'description' || normalizedId.includes('description') || normalizedId.includes('comment')
   }
 
+  const normalizeScrollRatio = (value: number): number => {
+    if (!Number.isFinite(value)) {
+      return 0
+    }
+
+    if (value < 0) {
+      return 0
+    }
+
+    if (value > 1) {
+      return 1
+    }
+
+    return value
+  }
+
+  const isCurrentUserOrchestrator = (): boolean => roomState.orchestratorId !== null && roomState.orchestratorId === roomState.myId
+
+  const canFollowCurrentOrchestrator = (): boolean => roomState.orchestratorId !== null && roomState.orchestratorId !== roomState.myId
+
+  const updateFollowSecondsRemaining = (): void => {
+    if (followResumeDeadline <= 0) {
+      followSecondsRemaining = 0
+      return
+    }
+
+    followSecondsRemaining = Math.max(0, Math.ceil((followResumeDeadline - Date.now()) / 1000))
+  }
+
+  const clearFollowCountdownInterval = (): void => {
+    window.clearInterval(followCountdownInterval)
+    followCountdownInterval = undefined
+  }
+
+  const clearFollowResumeTimer = (): void => {
+    window.clearTimeout(followResumeTimer)
+    followResumeTimer = undefined
+    followResumeDeadline = 0
+    followSecondsRemaining = 0
+    clearFollowCountdownInterval()
+  }
+
+  const applyOrchestratorScrollSync = (force = false): void => {
+    if (!middleScrollElement || !isConnected || !canFollowCurrentOrchestrator() || !isFollowingOrchestrator) {
+      return
+    }
+
+    const orchestratorView = roomState.orchestratorView
+    if (!selectedIssueId || orchestratorView.issueId !== selectedIssueId) {
+      return
+    }
+
+    const maxScroll = middleScrollElement.scrollHeight - middleScrollElement.clientHeight
+    const nextTop = maxScroll > 0 ? normalizeScrollRatio(orchestratorView.scrollRatio) * maxScroll : 0
+    if (!force && Math.abs(middleScrollElement.scrollTop - nextTop) < 2) {
+      return
+    }
+
+    isApplyingFollowScroll = true
+    middleScrollElement.scrollTop = nextTop
+    window.setTimeout(() => {
+      isApplyingFollowScroll = false
+    }, 0)
+  }
+
+  const resumeFollowingOrchestrator = (): void => {
+    isFollowingOrchestrator = true
+    followSuspensionReason = 'none'
+    localSelectedIssueIdOverride = null
+    clearFollowResumeTimer()
+    void tick().then(() => applyOrchestratorScrollSync(true))
+  }
+
+  const startFollowResumeTimer = (): void => {
+    followResumeDeadline = Date.now() + FOLLOW_RESUME_DELAY_MS
+    updateFollowSecondsRemaining()
+
+    window.clearTimeout(followResumeTimer)
+    followResumeTimer = window.setTimeout(() => {
+      resumeFollowingOrchestrator()
+    }, FOLLOW_RESUME_DELAY_MS)
+
+    if (followCountdownInterval === undefined) {
+      followCountdownInterval = window.setInterval(() => {
+        updateFollowSecondsRemaining()
+        if (followSecondsRemaining === 0) {
+          clearFollowCountdownInterval()
+        }
+      }, 1000)
+    }
+  }
+
+  const suspendFollowingOrchestrator = (reason: Exclude<FollowSuspensionReason, 'none'>): void => {
+    if (!canFollowCurrentOrchestrator()) {
+      return
+    }
+
+    isFollowingOrchestrator = false
+    followSuspensionReason = reason
+    startFollowResumeTimer()
+  }
+
+  const noteFollowUserInteraction = (reason: Exclude<FollowSuspensionReason, 'none'>): void => {
+    if (!canFollowCurrentOrchestrator()) {
+      return
+    }
+
+    const effectiveReason =
+      followSuspensionReason === 'ticket_selection' && reason === 'interaction' ? 'ticket_selection' : reason
+    suspendFollowingOrchestrator(effectiveReason)
+  }
+
+  const clearOrchestratorScrollSyncTimer = (): void => {
+    window.clearTimeout(orchestratorScrollSyncTimer)
+    orchestratorScrollSyncTimer = undefined
+    pendingOrchestratorScrollRatio = null
+  }
+
+  const middleScrollRatio = (): number => {
+    if (!middleScrollElement) {
+      return 0
+    }
+
+    const maxScroll = middleScrollElement.scrollHeight - middleScrollElement.clientHeight
+    if (maxScroll <= 0) {
+      return 0
+    }
+
+    return normalizeScrollRatio(middleScrollElement.scrollTop / maxScroll)
+  }
+
+  const syncOrchestratorViewState = (force = false, explicitScrollRatio?: number): void => {
+    if (!isConnected || !isCurrentUserOrchestrator()) {
+      return
+    }
+
+    const issueId = roomState.issueWorkspace.selectedIssueId
+    const targetId = issueId ? orchestratorFocusedTargetId : null
+    const scrollRatio = normalizeScrollRatio(explicitScrollRatio ?? middleScrollRatio())
+    const shouldSkip =
+      !force &&
+      lastSentOrchestratorViewIssueId === issueId &&
+      lastSentOrchestratorViewTargetId === targetId &&
+      Math.abs(lastSentOrchestratorScrollRatio - scrollRatio) < 0.0025
+
+    if (shouldSkip) {
+      return
+    }
+
+    lastSentOrchestratorViewIssueId = issueId
+    lastSentOrchestratorViewTargetId = targetId
+    lastSentOrchestratorScrollRatio = scrollRatio
+
+    send({
+      type: 'set_orchestrator_view',
+      issueId,
+      targetId,
+      scrollRatio,
+    })
+  }
+
+  const flushOrchestratorScrollSync = (): void => {
+    orchestratorScrollSyncTimer = undefined
+    const scrollRatio = pendingOrchestratorScrollRatio
+    pendingOrchestratorScrollRatio = null
+    syncOrchestratorViewState(false, scrollRatio === null ? undefined : scrollRatio)
+  }
+
+  const queueOrchestratorScrollSync = (): void => {
+    if (!isConnected || !isCurrentUserOrchestrator()) {
+      return
+    }
+
+    pendingOrchestratorScrollRatio = middleScrollRatio()
+    if (orchestratorScrollSyncTimer !== undefined) {
+      return
+    }
+
+    orchestratorScrollSyncTimer = window.setTimeout(flushOrchestratorScrollSync, ORCHESTRATOR_SCROLL_SYNC_DELAY_MS)
+  }
+
+  const syncOrchestratorFocusedTarget = (targetId: string | null): void => {
+    const normalizedTargetId = targetId ? normalizePresenceTargetId(targetId) : null
+    if (orchestratorFocusedTargetId === normalizedTargetId) {
+      return
+    }
+
+    orchestratorFocusedTargetId = normalizedTargetId
+    syncOrchestratorViewState(true)
+  }
+
+  const handleMiddleScroll = (): void => {
+    if (!isConnected || !middleScrollElement || isApplyingFollowScroll) {
+      return
+    }
+
+    if (isCurrentUserOrchestrator()) {
+      queueOrchestratorScrollSync()
+      return
+    }
+
+    noteFollowUserInteraction('interaction')
+  }
+
+  const handleIssueFieldFocus = (targetId: string): void => {
+    setIssuePresence(targetId, true)
+
+    if (isCurrentUserOrchestrator()) {
+      syncOrchestratorFocusedTarget(targetId)
+      return
+    }
+
+    if (!canFollowCurrentOrchestrator()) {
+      return
+    }
+
+    const orchestratorTargetId = roomState.orchestratorView.issueId === selectedIssueId ? roomState.orchestratorView.targetId : null
+    if (isFollowingOrchestrator && orchestratorTargetId === targetId) {
+      return
+    }
+
+    noteFollowUserInteraction('interaction')
+  }
+
+  const handleIssueFieldBlur = (targetId: string): void => {
+    setIssuePresence(targetId, false)
+
+    if (isCurrentUserOrchestrator() && orchestratorFocusedTargetId === normalizePresenceTargetId(targetId)) {
+      syncOrchestratorFocusedTarget(null)
+    }
+  }
+
+  const followOrchestrator = (): void => {
+    if (!canFollowCurrentOrchestrator() || isFollowingOrchestrator) {
+      return
+    }
+
+    resumeFollowingOrchestrator()
+  }
+
   const selectIssue = (issue: JiraIssue, group: JiraIssueGroup): void => {
     ticketWorkspaceElement?.scrollIntoView({ block: 'start', behavior: 'smooth' })
     releaseAllIssuePresence()
+
+    const sharedIssueId = roomState.issueWorkspace.selectedIssueId
+    if (canFollowCurrentOrchestrator() && issue.id !== sharedIssueId) {
+      localSelectedIssueIdOverride = issue.id
+      noteFollowUserInteraction('ticket_selection')
+    } else if (!canFollowCurrentOrchestrator()) {
+      localSelectedIssueIdOverride = null
+    }
+
+    if (isCurrentUserOrchestrator()) {
+      orchestratorFocusedTargetId = null
+      clearOrchestratorScrollSyncTimer()
+    }
+
     const sprintName = group.sprint?.name ?? group.name
     send({
       type: 'select_issue',
@@ -825,7 +1105,7 @@
   }
 
   const selectedIssueIdentity = (): { issueId: string; issueKey: string; issueUrl: string } | null => {
-    const issueId = roomState.issueWorkspace.selectedIssueId
+    const issueId = selectedIssueId
     if (!issueId) {
       return null
     }
@@ -986,7 +1266,7 @@
   }
 
   const updateIssueSubtaskTitle = (subtask: IssueSubtask, value: string): void => {
-    const issueId = roomState.issueWorkspace.selectedIssueId
+    const issueId = selectedIssueId
     if (!issueId) {
       return
     }
@@ -1000,7 +1280,7 @@
   }
 
   const updateIssueSubtaskDescription = (subtask: IssueSubtask, value: string): void => {
-    const issueId = roomState.issueWorkspace.selectedIssueId
+    const issueId = selectedIssueId
     if (!issueId) {
       return
     }
@@ -1014,7 +1294,7 @@
   }
 
   const toggleIssueSubtaskDone = (subtask: IssueSubtask, done: boolean): void => {
-    const issueId = roomState.issueWorkspace.selectedIssueId
+    const issueId = selectedIssueId
     if (!issueId) {
       return
     }
@@ -1028,7 +1308,7 @@
   }
 
   const removeIssueSubtask = (subtask: IssueSubtask): void => {
-    const issueId = roomState.issueWorkspace.selectedIssueId
+    const issueId = selectedIssueId
     if (!issueId) {
       return
     }
@@ -1180,6 +1460,15 @@
     joinedName = normalizedName
     connectionMessage = ''
     saveNameLocally(normalizedName)
+    clearFollowResumeTimer()
+    clearOrchestratorScrollSyncTimer()
+    isFollowingOrchestrator = true
+    followSuspensionReason = 'none'
+    localSelectedIssueIdOverride = null
+    orchestratorFocusedTargetId = null
+    lastSentOrchestratorViewIssueId = null
+    lastSentOrchestratorViewTargetId = null
+    lastSentOrchestratorScrollRatio = -1
     isConnecting = true
 
     const nextSocket = new WebSocket(socketUrl())
@@ -1207,6 +1496,7 @@
       }
 
       if (serverEvent.type === 'state_snapshot') {
+        const previousRoomState = roomState
         roomState = serverEvent.state
         jiraIssues = serverEvent.state.jiraIssues
         syncIssueFieldDocsFromSnapshot(serverEvent.state.issueWorkspace.drafts)
@@ -1215,6 +1505,32 @@
           joinedName = me.name
           if (!isProfileEditing) {
             nameInput = me.name
+          }
+        }
+
+        if (!canFollowCurrentOrchestrator()) {
+          isFollowingOrchestrator = true
+          followSuspensionReason = 'none'
+          localSelectedIssueIdOverride = null
+          clearFollowResumeTimer()
+        } else {
+          const hasNextTicketTransition = previousRoomState.revealed && !roomState.revealed
+          if (hasNextTicketTransition && !isFollowingOrchestrator && followSuspensionReason === 'interaction') {
+            resumeFollowingOrchestrator()
+          }
+        }
+
+        if (isCurrentUserOrchestrator() && roomState.orchestratorView.issueId !== roomState.issueWorkspace.selectedIssueId) {
+          orchestratorFocusedTargetId = null
+        }
+
+        if (localSelectedIssueIdOverride) {
+          const existsInDrafts = roomState.issueWorkspace.drafts.some((draft) => draft.issueId === localSelectedIssueIdOverride)
+          const existsInJira = jiraIssues
+            ? jiraIssues.groups.some((group) => group.issues.some((issue) => issue.id === localSelectedIssueIdOverride))
+            : false
+          if (!existsInDrafts && !existsInJira) {
+            localSelectedIssueIdOverride = null
           }
         }
 
@@ -1247,10 +1563,20 @@
       }
 
       releaseAllIssuePresence()
+      clearFollowResumeTimer()
+      clearOrchestratorScrollSyncTimer()
       socket = null
       isConnected = false
       isConnecting = false
       joinedName = ''
+      isFollowingOrchestrator = true
+      followSuspensionReason = 'none'
+      localSelectedIssueIdOverride = null
+      isApplyingFollowScroll = false
+      orchestratorFocusedTargetId = null
+      lastSentOrchestratorViewIssueId = null
+      lastSentOrchestratorViewTargetId = null
+      lastSentOrchestratorScrollRatio = -1
       roomState = createEmptyState()
       disposeAllIssueDocs()
       jiraIssues = null
@@ -1330,6 +1656,10 @@
 
   const revealOrNextTicket = (): void => {
     if (roomState.revealed) {
+      if (isCurrentUserOrchestrator()) {
+        orchestratorFocusedTargetId = null
+        clearOrchestratorScrollSyncTimer()
+      }
       send({ type: 'next_ticket' })
       return
     }
@@ -1355,6 +1685,10 @@
       return
     }
 
+    if (!isCurrentUserOrchestrator()) {
+      noteFollowUserInteraction('interaction')
+    }
+
     event.preventDefault()
     middleScrollElement.scrollBy({ top: event.deltaY })
   }
@@ -1374,6 +1708,8 @@
 
   onDestroy(() => {
     window.clearTimeout(profileSyncTimer)
+    clearFollowResumeTimer()
+    clearOrchestratorScrollSyncTimer()
     releaseAllIssuePresence()
     disposeAllIssueDocs()
     socket?.close()
@@ -1395,9 +1731,19 @@
     estimate,
     voters: roomState.participants.filter((participant) => participant.vote === estimate),
   })).filter((bucket) => bucket.voters.length > 0)
-  $: selectedIssueId = roomState.issueWorkspace.selectedIssueId
+  $: sharedSelectedIssueId = roomState.issueWorkspace.selectedIssueId
+  $: if (isFollowingOrchestrator) {
+    localSelectedIssueIdOverride = null
+  }
+  $: selectedIssueId = localSelectedIssueIdOverride ?? sharedSelectedIssueId
   $: if (activePresenceIssueId && selectedIssueId !== activePresenceIssueId) {
     releaseAllIssuePresence()
+  }
+  $: if (isConnected && canFollowCurrentOrchestrator() && isFollowingOrchestrator && middleScrollElement) {
+    void tick().then(() => applyOrchestratorScrollSync())
+  }
+  $: if (isConnected && isCurrentUserOrchestrator() && middleScrollElement) {
+    void tick().then(() => syncOrchestratorViewState(false))
   }
   $: selectedIssueDraft = selectedIssueId
     ? roomState.issueWorkspace.drafts.find((draft) => draft.issueId === selectedIssueId) ?? null
@@ -1453,6 +1799,18 @@
     shouldAutoLoadJiraAfterConnect = false
     void loadJiraIssues()
   }
+  $: orchestratorParticipant = roomState.orchestratorId
+    ? roomState.participants.find((participant) => participant.id === roomState.orchestratorId) ?? null
+    : null
+  $: followedFieldTargetId =
+    canFollowCurrentOrchestrator() && isFollowingOrchestrator && selectedIssueId && roomState.orchestratorView.issueId === selectedIssueId
+      ? roomState.orchestratorView.targetId
+      : null
+  $: canShowFollowButton = isConnected && canFollowCurrentOrchestrator()
+  $: followStatusText =
+    followSuspensionReason === 'ticket_selection'
+      ? `Following paused on your selected ticket. Auto-refollow in ${followSecondsRemaining}s.`
+      : `Following paused. Auto-refollow in ${followSecondsRemaining}s or next ticket.`
   $: selectedIssueKey = selectedIssueDraft?.issueKey || selectedIssueFromJira?.key || ''
   $: selectedIssueUrl = selectedIssueDraft?.issueUrl || selectedIssueFromJira?.url || ''
   $: selectedIssueSummary = getFieldValue(selectedIssueDraft, 'summary') || selectedIssueFromJira?.summary || '(no summary)'
@@ -1500,7 +1858,7 @@
     </section>
   {:else}
     <section class="workspace">
-      <div class="middle-scroll" bind:this={middleScrollElement}>
+      <div class="middle-scroll" bind:this={middleScrollElement} on:scroll={handleMiddleScroll}>
         <section class="panel summary issue-editor" bind:this={ticketWorkspaceElement}>
           <div class="panel-heading">
             <h2>Ticket Workspace</h2>
@@ -1548,11 +1906,15 @@
           {/if}
 
           {#if selectedIssueDraft}
-            <div class="issue-fields">
+            <div class="issue-fields" style={`--follow-hue: ${orchestratorParticipant?.colorHue ?? 210};`}>
               {#each visibleIssueFields as field (`${selectedIssueId ?? ''}:${field.id}`)}
                 {@const fieldPresenceTarget = fieldPresenceTargetId(field.id)}
                 {@const fieldPresenceLabel = getPresenceLabelForTarget(fieldPresenceTarget)}
-                <div class="issue-field" class:busy={isTargetEditedByOthers(fieldPresenceTarget)}>
+                <div
+                  class="issue-field"
+                  class:busy={isTargetEditedByOthers(fieldPresenceTarget)}
+                  class:follow-highlight={followedFieldTargetId === fieldPresenceTarget}
+                >
                   <p class="issue-field-label">{field.label}</p>
                   {#if fieldPresenceLabel}
                     <p class="presence-indicator" class:others={isTargetEditedByOthers(fieldPresenceTarget)}>{fieldPresenceLabel}</p>
@@ -1563,8 +1925,8 @@
                     minRows={field.id === 'description' ? 6 : 3}
                     busy={isTargetEditedByOthers(fieldPresenceTarget)}
                     markdownMode={shouldUseMarkdownEditor(field.id)}
-                    on:focus={() => setIssuePresence(fieldPresenceTarget, true)}
-                    on:blur={() => setIssuePresence(fieldPresenceTarget, false)}
+                    on:focus={() => handleIssueFieldFocus(fieldPresenceTarget)}
+                    on:blur={() => handleIssueFieldBlur(fieldPresenceTarget)}
                   />
                 </div>
               {/each}
@@ -1663,7 +2025,28 @@
       </div>
 
       <section class="participants">
-        <h2>Participants</h2>
+        <div class="participants-heading">
+          <h2>Participants</h2>
+          {#if canShowFollowButton}
+            <div class="follow-controls">
+              <button
+                type="button"
+                class="text-button compact follow-button"
+                class:active={isFollowingOrchestrator}
+                on:click={followOrchestrator}
+                disabled={isFollowingOrchestrator}
+              >
+                {isFollowingOrchestrator ? 'Following orchestrator' : 'Follow orchestrator'}
+              </button>
+              {#if !isFollowingOrchestrator && followSecondsRemaining > 0}
+                <span class="follow-countdown" aria-live="polite">{followSecondsRemaining}s</span>
+              {/if}
+            </div>
+          {/if}
+        </div>
+        {#if canShowFollowButton && !isFollowingOrchestrator}
+          <p class="follow-status" class:ticket={followSuspensionReason === 'ticket_selection'}>{followStatusText}</p>
+        {/if}
         <ul>
           {#each participantsForDisplay as participant}
             <li class:me={participant.id === roomState.myId} style={`--user-hue: ${participant.colorHue};`}>
