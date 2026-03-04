@@ -5,6 +5,7 @@
     type ClientEvent,
     type EstimateOption,
     type IssueDraftSnapshot,
+    type IssueFieldCrdtSnapshot,
     type IssueEditorField,
     type IssueSubtask,
     type JiraIssue,
@@ -17,6 +18,7 @@
     type ServerEvent,
   } from './lib/protocol'
   import CodeMirrorField from './lib/CodeMirrorField.svelte'
+  import * as Y from 'yjs'
 
   type JiraConfig = {
     baseUrl: string
@@ -25,9 +27,21 @@
     ticketPrefix: string
   }
 
+  type IssueFieldDoc = {
+    issueId: string
+    fieldId: string
+    label: string
+    doc: Y.Doc
+    text: Y.Text
+    onUpdate: (update: Uint8Array, origin: unknown) => void
+  }
+
   const STORAGE_KEY = 'scrummer.display_name'
   const JIRA_STORAGE_KEY = 'scrummer.jira_config'
   const DEFAULT_SERVER_PORT = '3101'
+  const CRDT_UPDATE_MAX_BYTES = 1024 * 256
+  const CRDT_REMOTE_ORIGIN = Symbol('crdt-remote')
+  const CRDT_BOOTSTRAP_ORIGIN = Symbol('crdt-bootstrap')
 
   const createEmptyIssueWorkspace = (): RoomStateSnapshot['issueWorkspace'] => ({
     selectedIssueId: null,
@@ -80,8 +94,10 @@
   let jiraListScrollElement: HTMLElement | null = null
   let participantNameInputElement: HTMLInputElement | null = null
   let isRawTicketDataOpen = false
+  let isCrdtDebugOpen = false
   let rawTicketDataIssueId: string | null = null
   let shouldAutoLoadJiraAfterConnect = false
+  const issueFieldDocsByIssue = new Map<string, Map<string, IssueFieldDoc>>()
 
   const socketUrl = (): string => {
     const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim()
@@ -458,6 +474,296 @@
     return [...deduped.values()]
   }
 
+  const encodeBinaryPayload = (payload: Uint8Array): string => {
+    let binary = ''
+    const chunkSize = 0x8000
+    for (let offset = 0; offset < payload.length; offset += chunkSize) {
+      const chunk = payload.subarray(offset, offset + chunkSize)
+      binary += String.fromCharCode(...chunk)
+    }
+    return window.btoa(binary)
+  }
+
+  const decodeBinaryPayload = (value: string): Uint8Array | null => {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return null
+    }
+
+    try {
+      const binary = window.atob(trimmed)
+      if (!binary || binary.length > CRDT_UPDATE_MAX_BYTES) {
+        return null
+      }
+
+      const bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index)
+      }
+
+      return bytes
+    } catch {
+      return null
+    }
+  }
+
+  const normalizeIssueId = (value: string): string => value.trim().slice(0, 80)
+
+  const getIssueFieldDoc = (issueId: string, fieldId: string): IssueFieldDoc | null => {
+    const normalizedIssueId = normalizeIssueId(issueId)
+    const normalizedFieldId = normalizeEditorFieldId(fieldId)
+    if (!normalizedIssueId || !normalizedFieldId) {
+      return null
+    }
+
+    return issueFieldDocsByIssue.get(normalizedIssueId)?.get(normalizedFieldId) ?? null
+  }
+
+  const setDraftFieldFromCrdt = (issueId: string, fieldId: string, label: string, value: string): boolean => {
+    const draft = roomState.issueWorkspace.drafts.find((entry) => entry.issueId === issueId)
+    if (!draft) {
+      return false
+    }
+
+    const normalizedFieldId = normalizeEditorFieldId(fieldId)
+    if (!normalizedFieldId) {
+      return false
+    }
+
+    const normalizedLabel = label.trim().slice(0, 80) || normalizedFieldId
+    const normalizedValue = normalizeEditorText(value)
+    const existingField = draft.fields.find((field) => field.id === normalizedFieldId)
+    if (existingField) {
+      const labelChanged = existingField.label !== normalizedLabel
+      existingField.label = normalizedLabel
+      existingField.value = normalizedValue
+      return labelChanged
+    }
+
+    draft.fields.push({
+      id: normalizedFieldId,
+      label: normalizedLabel,
+      value: normalizedValue,
+    })
+    return true
+  }
+
+  const ensureIssueFieldDoc = (issueId: string, field: IssueEditorField): IssueFieldDoc => {
+    const normalizedIssueId = normalizeIssueId(issueId)
+    const normalizedFieldId = normalizeEditorFieldId(field.id)
+    const normalizedLabel = field.label.trim().slice(0, 80) || normalizedFieldId
+    const normalizedValue = normalizeEditorText(field.value)
+
+    let issueDocs = issueFieldDocsByIssue.get(normalizedIssueId)
+    if (!issueDocs) {
+      issueDocs = new Map<string, IssueFieldDoc>()
+      issueFieldDocsByIssue.set(normalizedIssueId, issueDocs)
+    }
+
+    const existing = issueDocs.get(normalizedFieldId)
+    if (existing) {
+      existing.label = normalizedLabel
+      return existing
+    }
+
+    const doc = new Y.Doc()
+    const text = doc.getText('content')
+    if (normalizedValue) {
+      text.insert(0, normalizedValue)
+    }
+
+    const issueFieldDoc: IssueFieldDoc = {
+      issueId: normalizedIssueId,
+      fieldId: normalizedFieldId,
+      label: normalizedLabel,
+      doc,
+      text,
+      onUpdate: (update, origin) => {
+        if (origin === CRDT_REMOTE_ORIGIN || origin === CRDT_BOOTSTRAP_ORIGIN) {
+          return
+        }
+
+        send({
+          type: 'issue_crdt_delta',
+          issueId: normalizedIssueId,
+          fieldId: normalizedFieldId,
+          label: issueFieldDoc.label,
+          update: encodeBinaryPayload(update),
+        })
+      },
+    }
+
+    doc.on('update', issueFieldDoc.onUpdate)
+    issueDocs.set(normalizedFieldId, issueFieldDoc)
+    return issueFieldDoc
+  }
+
+  const ensureIssueFieldDocsForDraft = (draft: IssueDraftSnapshot): void => {
+    for (const field of draft.fields) {
+      ensureIssueFieldDoc(draft.issueId, field)
+    }
+  }
+
+  const replaceIssueFieldDocValue = (issueFieldDoc: IssueFieldDoc, nextValue: string, origin: unknown): void => {
+    const normalizedValue = normalizeEditorText(nextValue)
+    const currentValue = issueFieldDoc.text.toString()
+    if (currentValue === normalizedValue) {
+      return
+    }
+
+    issueFieldDoc.doc.transact(() => {
+      if (currentValue.length > 0) {
+        issueFieldDoc.text.delete(0, currentValue.length)
+      }
+      if (normalizedValue.length > 0) {
+        issueFieldDoc.text.insert(0, normalizedValue)
+      }
+    }, origin)
+  }
+
+  const disposeIssueDocsForIssue = (issueId: string): void => {
+    const normalizedIssueId = normalizeIssueId(issueId)
+    const issueDocs = issueFieldDocsByIssue.get(normalizedIssueId)
+    if (!issueDocs) {
+      return
+    }
+
+    for (const issueFieldDoc of issueDocs.values()) {
+      issueFieldDoc.doc.off('update', issueFieldDoc.onUpdate)
+      issueFieldDoc.doc.destroy()
+    }
+
+    issueFieldDocsByIssue.delete(normalizedIssueId)
+  }
+
+  const disposeAllIssueDocs = (): void => {
+    for (const issueId of issueFieldDocsByIssue.keys()) {
+      disposeIssueDocsForIssue(issueId)
+    }
+  }
+
+  const syncIssueFieldDocsFromSnapshot = (drafts: IssueDraftSnapshot[]): void => {
+    const activeIssueIds = new Set<string>()
+    for (const draft of drafts) {
+      const normalizedIssueId = normalizeIssueId(draft.issueId)
+      if (!normalizedIssueId) {
+        continue
+      }
+
+      activeIssueIds.add(normalizedIssueId)
+      ensureIssueFieldDocsForDraft(draft)
+      for (const field of draft.fields) {
+        const issueFieldDoc = getIssueFieldDoc(normalizedIssueId, field.id)
+        if (!issueFieldDoc) {
+          continue
+        }
+
+        issueFieldDoc.label = field.label.trim().slice(0, 80) || issueFieldDoc.label
+        replaceIssueFieldDocValue(issueFieldDoc, field.value, CRDT_BOOTSTRAP_ORIGIN)
+      }
+    }
+
+    for (const issueId of issueFieldDocsByIssue.keys()) {
+      if (!activeIssueIds.has(issueId)) {
+        disposeIssueDocsForIssue(issueId)
+      }
+    }
+  }
+
+  const applyIssueFieldCrdtUpdate = (
+    issueId: string,
+    fieldId: string,
+    label: string,
+    encodedUpdate: string,
+    origin: unknown,
+  ): boolean => {
+    const normalizedIssueId = normalizeIssueId(issueId)
+    const normalizedFieldId = normalizeEditorFieldId(fieldId)
+    if (!normalizedIssueId || !normalizedFieldId) {
+      return false
+    }
+
+    const decodedUpdate = decodeBinaryPayload(encodedUpdate)
+    if (!decodedUpdate) {
+      return false
+    }
+
+    const fallbackField = createEditorField(normalizedFieldId, label || normalizedFieldId, '')
+    const draft = roomState.issueWorkspace.drafts.find((entry) => entry.issueId === normalizedIssueId) ?? null
+    const draftField = draft?.fields.find((entry) => entry.id === normalizedFieldId) ?? fallbackField
+    const issueFieldDoc = ensureIssueFieldDoc(normalizedIssueId, draftField)
+    issueFieldDoc.label = label.trim().slice(0, 80) || issueFieldDoc.label
+
+    try {
+      Y.applyUpdate(issueFieldDoc.doc, decodedUpdate, origin)
+    } catch {
+      return false
+    }
+
+    return setDraftFieldFromCrdt(normalizedIssueId, normalizedFieldId, issueFieldDoc.label, issueFieldDoc.text.toString())
+  }
+
+  const applyIssueCrdtBootstrap = (issueId: string, fields: IssueFieldCrdtSnapshot[]): void => {
+    const normalizedIssueId = normalizeIssueId(issueId)
+    if (!normalizedIssueId || fields.length === 0) {
+      return
+    }
+
+    for (const field of fields) {
+      applyIssueFieldCrdtUpdate(normalizedIssueId, field.fieldId, field.label, field.update, CRDT_BOOTSTRAP_ORIGIN)
+    }
+
+    roomState = { ...roomState }
+  }
+
+  const applyIssueCrdtDelta = (
+    issueId: string,
+    fieldId: string,
+    label: string,
+    update: string,
+    updatedBy: string | null,
+    updatedAt: string,
+  ): void => {
+    applyIssueFieldCrdtUpdate(issueId, fieldId, label, update, CRDT_REMOTE_ORIGIN)
+    const draft = roomState.issueWorkspace.drafts.find((entry) => entry.issueId === normalizeIssueId(issueId))
+    if (draft) {
+      draft.updatedBy = updatedBy
+      draft.updatedAt = updatedAt
+    }
+
+    roomState = { ...roomState }
+  }
+
+  const getIssueFieldYText = (issueId: string, field: IssueEditorField): Y.Text | null => {
+    const issueFieldDoc = getIssueFieldDoc(issueId, field.id) ?? ensureIssueFieldDoc(issueId, field)
+    return issueFieldDoc?.text ?? null
+  }
+
+  const getIssueFieldSyncState = (
+    issueId: string,
+    field: IssueEditorField,
+  ): { id: string; label: string; synced: boolean; docLength: number; draftLength: number } => {
+    const issueFieldDoc = getIssueFieldDoc(issueId, field.id)
+    if (!issueFieldDoc) {
+      return {
+        id: field.id,
+        label: field.label,
+        synced: false,
+        docLength: 0,
+        draftLength: field.value.length,
+      }
+    }
+
+    const docValue = issueFieldDoc.text.toString()
+    return {
+      id: field.id,
+      label: field.label,
+      synced: docValue === field.value,
+      docLength: docValue.length,
+      draftLength: field.value.length,
+    }
+  }
+
   const getFieldValue = (draft: IssueDraftSnapshot | null, fieldId: string): string => {
     if (!draft) {
       return ''
@@ -634,25 +940,6 @@
     }
 
     return names.length === 1 ? `${names[0]} is editing` : `${names.join(', ')} are editing`
-  }
-
-  const setIssueField = (field: IssueEditorField, value: string): void => {
-    const identity = selectedIssueIdentity()
-    if (!identity) {
-      return
-    }
-
-    send({
-      type: 'set_issue_field',
-      issueId: identity.issueId,
-      issueKey: identity.issueKey,
-      issueUrl: identity.issueUrl,
-      field: {
-        id: normalizeEditorFieldId(field.id),
-        label: field.label,
-        value: normalizeEditorText(value),
-      },
-    })
   }
 
   let newSubtaskTitle = ''
@@ -902,6 +1189,7 @@
       if (serverEvent.type === 'state_snapshot') {
         roomState = serverEvent.state
         jiraIssues = serverEvent.state.jiraIssues
+        syncIssueFieldDocsFromSnapshot(serverEvent.state.issueWorkspace.drafts)
         const me = roomState.participants.find((participant) => participant.id === roomState.myId)
         if (me) {
           joinedName = me.name
@@ -910,6 +1198,23 @@
           }
         }
 
+        return
+      }
+
+      if (serverEvent.type === 'issue_crdt_bootstrap') {
+        applyIssueCrdtBootstrap(serverEvent.issueId, serverEvent.fields)
+        return
+      }
+
+      if (serverEvent.type === 'issue_crdt_delta') {
+        applyIssueCrdtDelta(
+          serverEvent.issueId,
+          serverEvent.fieldId,
+          serverEvent.label,
+          serverEvent.update,
+          serverEvent.updatedBy,
+          serverEvent.updatedAt,
+        )
         return
       }
 
@@ -927,6 +1232,7 @@
       isConnecting = false
       joinedName = ''
       roomState = createEmptyState()
+      disposeAllIssueDocs()
       jiraIssues = null
       connectionMessage = 'Connection closed. Rejoin to continue planning.'
     })
@@ -1049,6 +1355,7 @@
   onDestroy(() => {
     window.clearTimeout(profileSyncTimer)
     releaseAllIssuePresence()
+    disposeAllIssueDocs()
     socket?.close()
   })
 
@@ -1084,6 +1391,7 @@
     : null
   $: if (selectedIssueId !== rawTicketDataIssueId) {
     isRawTicketDataOpen = false
+    isCrdtDebugOpen = false
     rawTicketDataIssueId = selectedIssueId
   }
   $: selectedIssueRawData = selectedIssueId
@@ -1131,6 +1439,10 @@
   $: selectedIssueUpdatedBy = selectedIssueDraft?.updatedBy
     ? roomState.participants.find((participant) => participant.id === selectedIssueDraft.updatedBy)?.name ?? 'Someone'
     : ''
+  $: selectedIssueCrdtSync = selectedIssueId && selectedIssueDraft
+    ? selectedIssueDraft.fields.map((field) => getIssueFieldSyncState(selectedIssueId, field))
+    : []
+  $: selectedIssueCrdtSyncedCount = selectedIssueCrdtSync.filter((entry) => entry.synced).length
 </script>
 
 <main class="app-shell" class:connected={isConnected} on:wheel|capture|nonpassive={handleAppWheel}>
@@ -1178,6 +1490,9 @@
               <button type="button" class="text-button compact" on:click={() => (isRawTicketDataOpen = !isRawTicketDataOpen)}>
                 {isRawTicketDataOpen ? 'Hide raw data' : 'View raw data'}
               </button>
+              <button type="button" class="text-button compact" on:click={() => (isCrdtDebugOpen = !isCrdtDebugOpen)}>
+                {isCrdtDebugOpen ? 'Hide CRDT debug' : 'CRDT debug'}
+              </button>
               {#if selectedIssueUrl}
                 <a href={selectedIssueUrl} target="_blank" rel="noreferrer">Open in Jira</a>
               {/if}
@@ -1191,9 +1506,24 @@
             </section>
           {/if}
 
+          {#if isCrdtDebugOpen}
+            <section class="raw-ticket-data">
+              <h3>CRDT sync</h3>
+              <p>{selectedIssueCrdtSyncedCount} / {selectedIssueCrdtSync.length} fields in sync.</p>
+              <ul class="crdt-debug-list">
+                {#each selectedIssueCrdtSync as entry (`${selectedIssueId ?? ''}:sync:${entry.id}`)}
+                  <li>
+                    <span>{entry.label}</span>
+                    <span>{entry.synced ? 'synced' : 'resyncing'} ({entry.docLength}/{entry.draftLength})</span>
+                  </li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
+
           {#if selectedIssueDraft}
             <div class="issue-fields">
-              {#each visibleIssueFields as field (field.id)}
+              {#each visibleIssueFields as field (`${selectedIssueId ?? ''}:${field.id}`)}
                 {@const fieldPresenceTarget = fieldPresenceTargetId(field.id)}
                 {@const fieldPresenceLabel = getPresenceLabelForTarget(fieldPresenceTarget)}
                 <div class="issue-field" class:busy={isTargetEditedByOthers(fieldPresenceTarget)}>
@@ -1203,12 +1533,12 @@
                   {/if}
                   <CodeMirrorField
                     value={field.value}
+                    yText={selectedIssueId ? getIssueFieldYText(selectedIssueId, field) : null}
                     minRows={field.id === 'description' ? 6 : 3}
                     busy={isTargetEditedByOthers(fieldPresenceTarget)}
                     markdownMode={shouldUseMarkdownEditor(field.id)}
                     on:focus={() => setIssuePresence(fieldPresenceTarget, true)}
                     on:blur={() => setIssuePresence(fieldPresenceTarget, false)}
-                    on:input={(event) => setIssueField(field, event.detail)}
                   />
                 </div>
               {/each}

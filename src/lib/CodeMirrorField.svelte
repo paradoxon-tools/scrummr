@@ -4,6 +4,8 @@
   import { markdown } from '@codemirror/lang-markdown'
   import { Compartment, EditorState, type Extension } from '@codemirror/state'
   import { EditorView, keymap, placeholder as editorPlaceholder } from '@codemirror/view'
+  import { yCollab } from 'y-codemirror.next'
+  import type * as Y from 'yjs'
 
   const dispatch = createEventDispatcher<{
     input: string
@@ -16,6 +18,7 @@
   export let placeholder = ''
   export let busy = false
   export let markdownMode = false
+  export let yText: Y.Text | null = null
 
   let rootElement: HTMLDivElement | null = null
   let view: EditorView | null = null
@@ -23,10 +26,13 @@
 
   const placeholderCompartment = new Compartment()
   const languageCompartment = new Compartment()
+  const collabCompartment = new Compartment()
 
   const placeholderExtension = (): Extension => (placeholder ? editorPlaceholder(placeholder) : [])
 
   const languageExtension = (): Extension => (markdownMode ? markdown() : [])
+
+  const collabExtension = (): Extension => (yText ? yCollab(yText, undefined) : [])
 
   const setDocumentValue = (nextValue: string): void => {
     if (!view) {
@@ -64,8 +70,9 @@
           EditorView.lineWrapping,
           placeholderCompartment.of(placeholderExtension()),
           languageCompartment.of(languageExtension()),
+          collabCompartment.of(collabExtension()),
           EditorView.updateListener.of((update) => {
-            if (!update.docChanged || isApplyingExternalValue) {
+            if (!update.docChanged || isApplyingExternalValue || yText) {
               return
             }
 
@@ -91,12 +98,17 @@
     view = null
   })
 
-  $: setDocumentValue(value)
+  $: if (!yText) {
+    setDocumentValue(value)
+  }
   $: if (view) {
     view.dispatch({ effects: placeholderCompartment.reconfigure(placeholderExtension()) })
   }
   $: if (view) {
     view.dispatch({ effects: languageCompartment.reconfigure(languageExtension()) })
+  }
+  $: if (view) {
+    view.dispatch({ effects: collabCompartment.reconfigure(collabExtension()) })
   }
 </script>
 

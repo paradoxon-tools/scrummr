@@ -73,6 +73,12 @@ export type IssueDraftSnapshot = {
   updatedAt: string
 }
 
+export type IssueFieldCrdtSnapshot = {
+  fieldId: string
+  label: string
+  update: string
+}
+
 export type IssuePresenceSnapshot = {
   issueId: string
   targetId: string
@@ -105,6 +111,13 @@ export type ClientEvent =
       issueKey: string
       issueUrl: string
       field: IssueEditorField
+    }
+  | {
+      type: 'issue_crdt_delta'
+      issueId: string
+      fieldId: string
+      label: string
+      update: string
     }
   | {
       type: 'add_issue_subtask'
@@ -154,4 +167,18 @@ export type RoomStateSnapshot = {
 
 export type ServerEvent =
   | { type: 'state_snapshot'; state: RoomStateSnapshot }
+  | {
+      type: 'issue_crdt_bootstrap'
+      issueId: string
+      fields: IssueFieldCrdtSnapshot[]
+    }
+  | {
+      type: 'issue_crdt_delta'
+      issueId: string
+      fieldId: string
+      label: string
+      update: string
+      updatedBy: string | null
+      updatedAt: string
+    }
   | { type: 'server_error'; message: string }

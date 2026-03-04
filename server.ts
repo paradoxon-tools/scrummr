@@ -2,6 +2,7 @@ import {
   ESTIMATE_OPTIONS,
   type ClientEvent,
   type EstimateOption,
+  type IssueFieldCrdtSnapshot,
   type IssueDraftSnapshot,
   type IssueEditorField,
   type IssuePresenceSnapshot,
@@ -14,6 +15,7 @@ import {
   type RoomStateSnapshot,
   type ServerEvent,
 } from './src/lib/protocol'
+import * as Y from 'yjs'
 
 type UserState = {
   name: string
@@ -33,6 +35,14 @@ type JiraIssueWithSprint = JiraIssue & {
 type JiraIssueFetchResult = {
   jiraIssues: JiraIssueResult
   subtasksByIssueId: Map<string, IssueSubtask[]>
+}
+
+type IssueFieldCrdtState = {
+  issueId: string
+  fieldId: string
+  label: string
+  doc: Y.Doc
+  text: Y.Text
 }
 
 const defaultServerPort = 3101
@@ -66,12 +76,14 @@ const subtaskDescriptionMaxLength = 16000
 const maxSubtasksPerIssue = 100
 const maxIssueFieldsPerDraft = 256
 const issuePresenceTargetIdMaxLength = 120
+const issueCrdtUpdateMaxBytes = 1024 * 256
 
 let revealed = false
 let selectedIssueId: string | null = null
 let orchestratorId: string | null = null
 
 const issueDrafts = new Map<string, IssueDraftSnapshot>()
+const issueFieldCrdtsByIssue = new Map<string, Map<string, IssueFieldCrdtState>>()
 const issuePresenceByIssue = new Map<string, Map<string, Set<string>>>()
 let sharedJiraIssues: JiraIssueResult | null = null
 let jiraSubtasksByIssueId = new Map<string, IssueSubtask[]>()
@@ -525,6 +537,156 @@ const normalizeIssueEditorFields = (value: unknown): IssueEditorField[] => {
   return [...uniqueFields.values()]
 }
 
+const encodeBinaryPayload = (payload: Uint8Array): string => Buffer.from(payload).toString('base64')
+
+const decodeBinaryPayload = (value: unknown, maxBytes = issueCrdtUpdateMaxBytes): Uint8Array | null => {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    const decoded = Buffer.from(trimmed, 'base64')
+    if (decoded.length === 0 || decoded.length > maxBytes) {
+      return null
+    }
+
+    return new Uint8Array(decoded)
+  } catch {
+    return null
+  }
+}
+
+const ensureDraftField = (draft: IssueDraftSnapshot, fieldId: string, label: string): IssueEditorField | null => {
+  const normalizedFieldId = normalizeFieldId(fieldId)
+  if (!normalizedFieldId) {
+    return null
+  }
+
+  const fallbackLabel = label || normalizedFieldId
+  const existingField = draft.fields.find((candidate) => candidate.id === normalizedFieldId)
+  if (existingField) {
+    existingField.label = normalizeFieldLabel(label, existingField.label || fallbackLabel)
+    return existingField
+  }
+
+  if (draft.fields.length >= maxIssueFieldsPerDraft) {
+    return null
+  }
+
+  const nextField: IssueEditorField = {
+    id: normalizedFieldId,
+    label: normalizeFieldLabel(label, fallbackLabel),
+    value: '',
+  }
+  draft.fields.push(nextField)
+  return nextField
+}
+
+const ensureIssueFieldCrdt = (draft: IssueDraftSnapshot, field: IssueEditorField): IssueFieldCrdtState => {
+  let issueCrdtMap = issueFieldCrdtsByIssue.get(draft.issueId)
+  if (!issueCrdtMap) {
+    issueCrdtMap = new Map<string, IssueFieldCrdtState>()
+    issueFieldCrdtsByIssue.set(draft.issueId, issueCrdtMap)
+  }
+
+  const existing = issueCrdtMap.get(field.id)
+  if (existing) {
+    existing.label = normalizeFieldLabel(field.label, existing.label)
+    return existing
+  }
+
+  const doc = new Y.Doc()
+  const text = doc.getText('content')
+  if (field.value) {
+    text.insert(0, field.value)
+  }
+
+  const created: IssueFieldCrdtState = {
+    issueId: draft.issueId,
+    fieldId: field.id,
+    label: normalizeFieldLabel(field.label, field.id),
+    doc,
+    text,
+  }
+
+  issueCrdtMap.set(field.id, created)
+  return created
+}
+
+const ensureIssueFieldCrdtsForDraft = (draft: IssueDraftSnapshot): void => {
+  for (const field of draft.fields) {
+    ensureIssueFieldCrdt(draft, field)
+  }
+}
+
+const replaceIssueFieldCrdtValue = (fieldState: IssueFieldCrdtState, nextValue: string): Uint8Array | null => {
+  const normalizedValue = normalizeIssueText(nextValue)
+  const currentValue = fieldState.text.toString()
+  if (currentValue === normalizedValue) {
+    return null
+  }
+
+  const replacementOrigin = Symbol('issue_field_replace')
+  let producedUpdate: Uint8Array | null = null
+  const captureUpdate = (candidate: Uint8Array, origin: unknown): void => {
+    if (origin === replacementOrigin) {
+      producedUpdate = candidate
+    }
+  }
+
+  fieldState.doc.on('update', captureUpdate)
+  fieldState.doc.transact(() => {
+    if (currentValue.length > 0) {
+      fieldState.text.delete(0, currentValue.length)
+    }
+    if (normalizedValue.length > 0) {
+      fieldState.text.insert(0, normalizedValue)
+    }
+  }, replacementOrigin)
+  fieldState.doc.off('update', captureUpdate)
+
+  return producedUpdate
+}
+
+const toIssueFieldCrdtBootstrapFields = (issueId: string): IssueFieldCrdtSnapshot[] => {
+  const draft = issueDrafts.get(issueId)
+  if (!draft) {
+    return []
+  }
+
+  ensureIssueFieldCrdtsForDraft(draft)
+
+  const issueCrdtMap = issueFieldCrdtsByIssue.get(issueId)
+  if (!issueCrdtMap) {
+    return []
+  }
+
+  const snapshots: IssueFieldCrdtSnapshot[] = []
+  for (const field of draft.fields) {
+    const fieldState = issueCrdtMap.get(field.id)
+    if (!fieldState) {
+      continue
+    }
+
+    field.label = normalizeFieldLabel(field.label, fieldState.label || field.id)
+    fieldState.label = field.label
+    field.value = normalizeIssueText(fieldState.text.toString())
+
+    snapshots.push({
+      fieldId: field.id,
+      label: field.label,
+      update: encodeBinaryPayload(Y.encodeStateAsUpdate(fieldState.doc)),
+    })
+  }
+
+  return snapshots
+}
+
 const cloneIssueDraft = (draft: IssueDraftSnapshot): IssueDraftSnapshot => ({
   issueId: draft.issueId,
   issueKey: draft.issueKey,
@@ -602,6 +764,7 @@ const ensureIssueDraft = (
       }
     }
 
+    ensureIssueFieldCrdtsForDraft(existing)
     touchIssueDraft(existing, updatedBy)
     return existing
   }
@@ -618,6 +781,7 @@ const ensureIssueDraft = (
   }
 
   issueDrafts.set(issueId, draft)
+  ensureIssueFieldCrdtsForDraft(draft)
   return draft
 }
 
@@ -1400,6 +1564,70 @@ const send = (ws: Bun.ServerWebSocket<SocketData>, event: ServerEvent): void => 
   ws.send(JSON.stringify(event))
 }
 
+const sendIssueCrdtBootstrap = (clientId: string, issueId: string | null): void => {
+  if (!issueId) {
+    return
+  }
+
+  const normalizedIssueId = normalizeIssueId(issueId)
+  if (!normalizedIssueId) {
+    return
+  }
+
+  const ws = sockets.get(clientId)
+  if (!ws) {
+    return
+  }
+
+  const fields = toIssueFieldCrdtBootstrapFields(normalizedIssueId)
+  if (fields.length === 0) {
+    return
+  }
+
+  send(ws, {
+    type: 'issue_crdt_bootstrap',
+    issueId: normalizedIssueId,
+    fields,
+  })
+}
+
+const broadcastIssueCrdtBootstrap = (issueId: string | null): void => {
+  for (const clientId of sockets.keys()) {
+    sendIssueCrdtBootstrap(clientId, issueId)
+  }
+}
+
+const broadcastIssueCrdtDelta = (
+  issueId: string,
+  fieldId: string,
+  label: string,
+  update: Uint8Array,
+  updatedBy: string | null,
+  updatedAt: string,
+): void => {
+  const normalizedIssueId = normalizeIssueId(issueId)
+  const normalizedFieldId = normalizeFieldId(fieldId)
+  if (!normalizedIssueId || !normalizedFieldId) {
+    return
+  }
+
+  const normalizedLabel = normalizeFieldLabel(label, normalizedFieldId)
+  const encodedUpdate = encodeBinaryPayload(update)
+  const event: ServerEvent = {
+    type: 'issue_crdt_delta',
+    issueId: normalizedIssueId,
+    fieldId: normalizedFieldId,
+    label: normalizedLabel,
+    update: encodedUpdate,
+    updatedBy,
+    updatedAt,
+  }
+
+  for (const ws of sockets.values()) {
+    send(ws, event)
+  }
+}
+
 const sendSnapshot = (clientId: string): void => {
   const ws = sockets.get(clientId)
   if (!ws) {
@@ -1474,6 +1702,7 @@ const server = Bun.serve<SocketData>({
         selectFirstSharedIssue()
       }
       broadcastSnapshots()
+      broadcastIssueCrdtBootstrap(selectedIssueId)
       return jsonResponse(200, jiraIssueFetchResult.jiraIssues)
     }
 
@@ -1491,6 +1720,7 @@ const server = Bun.serve<SocketData>({
     open(ws) {
       sockets.set(ws.data.id, ws)
       sendSnapshot(ws.data.id)
+      sendIssueCrdtBootstrap(ws.data.id, selectedIssueId)
     },
     message(ws, rawMessage) {
       const event = parseClientEvent(rawMessage)
@@ -1577,6 +1807,51 @@ const server = Bun.serve<SocketData>({
           ensureIssueDraft(issueId, issueKey, issueUrl, fields, clientId, jiraSubtasksByIssueId.get(issueId) ?? [])
           selectedIssueId = issueId
           broadcastSnapshots()
+          broadcastIssueCrdtBootstrap(issueId)
+          return
+        }
+        case 'issue_crdt_delta': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before editing ticket fields.' })
+            return
+          }
+
+          const issueId = normalizeIssueId(event.issueId)
+          const fieldId = normalizeFieldId(event.fieldId)
+          const update = decodeBinaryPayload(event.update)
+          if (!issueId || !fieldId || !update) {
+            send(ws, { type: 'server_error', message: 'Field update payload was invalid.' })
+            return
+          }
+
+          const draft = issueDrafts.get(issueId)
+          if (!draft) {
+            send(ws, { type: 'server_error', message: 'Select a ticket before editing ticket fields.' })
+            return
+          }
+
+          const field = ensureDraftField(draft, fieldId, event.label)
+          if (!field) {
+            send(ws, { type: 'server_error', message: 'Field update was rejected.' })
+            return
+          }
+
+          const fieldState = ensureIssueFieldCrdt(draft, field)
+          fieldState.label = normalizeFieldLabel(event.label, fieldState.label || field.id)
+          field.label = fieldState.label
+
+          try {
+            Y.applyUpdate(fieldState.doc, update)
+          } catch {
+            send(ws, { type: 'server_error', message: 'Field update payload could not be applied.' })
+            return
+          }
+
+          field.value = normalizeIssueText(fieldState.text.toString())
+          touchIssueDraft(draft, clientId)
+          selectedIssueId = issueId
+          broadcastIssueCrdtDelta(issueId, fieldId, field.label, update, clientId, draft.updatedAt)
           return
         }
         case 'set_issue_field': {
@@ -1603,17 +1878,24 @@ const server = Bun.serve<SocketData>({
             clientId,
             jiraSubtasksByIssueId.get(issueId) ?? [],
           )
-          const existingField = draft.fields.find((entry) => entry.id === field.id)
-          if (existingField) {
-            existingField.label = field.label
-            existingField.value = field.value
-          } else if (draft.fields.length < maxIssueFieldsPerDraft) {
-            draft.fields.push(field)
+          const draftField = ensureDraftField(draft, field.id, field.label)
+          if (!draftField) {
+            send(ws, { type: 'server_error', message: 'Field update was rejected.' })
+            return
           }
+
+          const fieldState = ensureIssueFieldCrdt(draft, draftField)
+          fieldState.label = normalizeFieldLabel(field.label, fieldState.label || draftField.id)
+          draftField.label = fieldState.label
+
+          const producedUpdate = replaceIssueFieldCrdtValue(fieldState, field.value)
+          draftField.value = normalizeIssueText(fieldState.text.toString())
 
           touchIssueDraft(draft, clientId)
           selectedIssueId = issueId
-          broadcastSnapshots()
+          if (producedUpdate) {
+            broadcastIssueCrdtDelta(issueId, draftField.id, draftField.label, producedUpdate, clientId, draft.updatedAt)
+          }
           return
         }
         case 'add_issue_subtask': {
@@ -1780,6 +2062,7 @@ const server = Bun.serve<SocketData>({
           resetRound()
           selectNextSharedIssue()
           broadcastSnapshots()
+          broadcastIssueCrdtBootstrap(selectedIssueId)
           return
         }
       }
@@ -1797,6 +2080,12 @@ const server = Bun.serve<SocketData>({
         selectedIssueId = null
         orchestratorId = null
         issueDrafts.clear()
+        for (const issueFieldCrdts of issueFieldCrdtsByIssue.values()) {
+          for (const fieldState of issueFieldCrdts.values()) {
+            fieldState.doc.destroy()
+          }
+        }
+        issueFieldCrdtsByIssue.clear()
         issuePresenceByIssue.clear()
         sharedJiraIssues = null
         jiraSubtasksByIssueId.clear()
