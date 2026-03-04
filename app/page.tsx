@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import * as Y from 'yjs'
 import CodeMirrorField from '../components/CodeMirrorField'
 import { createRoomConnection, type RoomConnection } from '../src/lib/roomConnection'
@@ -37,6 +38,7 @@ type IssueFieldDoc = {
 const STORAGE_KEY = 'scrummer.display_name'
 const JIRA_STORAGE_KEY = 'scrummer.jira_config'
 const CRDT_UPDATE_MAX_BYTES = 1024 * 256
+const SESSION_JOIN_RETRY_DELAY_MS = 1500
 const CRDT_REMOTE_ORIGIN = Symbol('crdt-remote')
 const CRDT_BOOTSTRAP_ORIGIN = Symbol('crdt-bootstrap')
 const ORCHESTRATOR_SCROLL_SYNC_DELAY_MS = 90
@@ -75,8 +77,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const toStringOrEmpty = (value: unknown): string => (typeof value === 'string' ? value : '')
 const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
 const normalizeIssueId = (value: string): string => value.trim().slice(0, 80)
+const normalizeIssueKey = (value: string): string => value.trim().toUpperCase().slice(0, 40)
 
 const normalizeTicketPrefix = (value: string): string => value.toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 20)
+
+const hasJiraSyncConfig = (value: JiraConfig): boolean =>
+  value.baseUrl.trim() !== '' && value.email.trim() !== '' && value.apiToken.trim() !== ''
 
 const normalizeEditorText = (value: string, maxLength = 16000): string => value.replace(/\r\n/g, '\n').slice(0, maxLength)
 const normalizeEditorFieldId = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 80)
@@ -385,6 +391,7 @@ export default function HomePage() {
   const [joinedName, setJoinedName] = useState('')
   const [connectionMessage, setConnectionMessage] = useState('')
   const [isConnected, setIsConnected] = useState(false)
+  const [isSocketConnected, setIsSocketConnected] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isProfileEditing, setIsProfileEditing] = useState(false)
   const [isJiraLoading, setIsJiraLoading] = useState(false)
@@ -400,12 +407,18 @@ export default function HomePage() {
   const socketRef = useRef<RoomConnection | null>(null)
   const isConnectedRef = useRef(false)
   const isConnectingRef = useRef(false)
+  const pendingJoinNameRef = useRef('')
+  const lastJoinAttemptAtRef = useRef(0)
   const isProfileEditingRef = useRef(false)
   const isFollowingOrchestratorRef = useRef(true)
   const localSelectedIssueIdOverrideRef = useRef<string | null>(null)
-  const shouldAutoLoadJiraAfterConnectRef = useRef(false)
   const profileSyncTimerRef = useRef<number | undefined>(undefined)
   const jiraRequestCounterRef = useRef(0)
+  const jiraConfigRef = useRef<JiraConfig>(createDefaultJiraConfig())
+  const jiraFieldBaselineByIssueRef = useRef<Map<string, Map<string, string>>>(new Map())
+  const jiraIssueKeyByIdRef = useRef<Map<string, string>>(new Map())
+  const jiraFieldSyncInFlightRef = useRef<Set<string>>(new Set())
+  const jiraFieldLastRequestedValueRef = useRef<Map<string, string>>(new Map())
   const issueFieldDocsByIssueRef = useRef<Map<string, Map<string, IssueFieldDoc>>>(new Map())
   const activePresenceIssueIdRef = useRef<string | null>(null)
   const activePresenceTargetsRef = useRef<Set<string>>(new Set())
@@ -450,6 +463,10 @@ export default function HomePage() {
     jiraIssuesRef.current = jiraIssues
   }, [jiraIssues])
 
+  useEffect(() => {
+    jiraConfigRef.current = jiraConfig
+  }, [jiraConfig])
+
   const apiBaseUrl = (): string => {
     const configured =
       process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ||
@@ -467,6 +484,23 @@ export default function HomePage() {
       return
     }
     socket.send(JSON.stringify(event))
+  }
+
+  const isSessionOpen = (state: RoomStateSnapshot): boolean => state.jiraIssues !== null
+
+  const tryJoinPendingParticipant = (force = false): void => {
+    const pendingName = normalizeName(pendingJoinNameRef.current)
+    if (!pendingName || isConnectedRef.current) {
+      return
+    }
+
+    const now = Date.now()
+    if (!force && now - lastJoinAttemptAtRef.current < SESSION_JOIN_RETRY_DELAY_MS) {
+      return
+    }
+
+    lastJoinAttemptAtRef.current = now
+    send({ type: 'join', name: pendingName })
   }
 
   const publishRoomState = (): void => {
@@ -840,6 +874,77 @@ export default function HomePage() {
     }
   }
 
+  const blurActiveTicketField = (): void => {
+    const activeElement = document.activeElement
+    if (!(activeElement instanceof HTMLElement)) {
+      return
+    }
+    if (!ticketWorkspaceRef.current?.contains(activeElement)) {
+      return
+    }
+    activeElement.blur()
+  }
+
+  const isIssueFieldIdleForSync = (issueId: string, fieldId: string): boolean => {
+    const targetId = fieldPresenceTargetId(fieldId)
+    const presenceEntry = roomStateRef.current.issueWorkspace.presence.find(
+      (entry) => entry.issueId === issueId && entry.targetId === targetId,
+    )
+    return !presenceEntry || presenceEntry.participantIds.length === 0
+  }
+
+  const updateJiraFieldBaseline = (issueId: string, fieldId: string, value: string): void => {
+    let issueBaseline = jiraFieldBaselineByIssueRef.current.get(issueId)
+    if (!issueBaseline) {
+      issueBaseline = new Map<string, string>()
+      jiraFieldBaselineByIssueRef.current.set(issueId, issueBaseline)
+    }
+    issueBaseline.set(fieldId, normalizeEditorText(value))
+  }
+
+  const syncIssueFieldToJira = async (issueId: string, issueKey: string, fieldId: string, value: string): Promise<void> => {
+    const syncKey = `${issueId}:${fieldId}`
+    const normalizedValue = normalizeEditorText(value)
+    const config = jiraConfigRef.current
+    if (!hasJiraSyncConfig(config)) {
+      return
+    }
+
+    jiraFieldSyncInFlightRef.current.add(syncKey)
+    jiraFieldLastRequestedValueRef.current.set(syncKey, normalizedValue)
+
+    try {
+      const response = await fetch(`${apiBaseUrl()}/api/jira/issues/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          baseUrl: config.baseUrl.trim(),
+          email: config.email.trim(),
+          apiToken: config.apiToken.trim(),
+          issueKey,
+          fieldId,
+          value: normalizedValue,
+        }),
+      })
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as unknown
+        const message = isRecord(payload) && typeof payload.message === 'string' ? payload.message : 'Failed to sync Jira field.'
+        setJiraError(message)
+        return
+      }
+
+      updateJiraFieldBaseline(issueId, fieldId, normalizedValue)
+      setJiraError('')
+    } catch {
+      setJiraError('Could not reach Jira while syncing field updates.')
+    } finally {
+      jiraFieldSyncInFlightRef.current.delete(syncKey)
+    }
+  }
+
   const selectedIssueId = localSelectedIssueIdOverride ?? roomState.issueWorkspace.selectedIssueId
 
   const selectedIssueIdentity = (): { issueId: string; issueKey: string; issueUrl: string } | null => {
@@ -1112,8 +1217,22 @@ export default function HomePage() {
 
     setNameInput(normalizedName)
     setJoinedName(normalizedName)
-    setConnectionMessage('')
+    pendingJoinNameRef.current = normalizedName
     window.localStorage.setItem(STORAGE_KEY, normalizedName)
+
+    const activeSocket = socketRef.current
+    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+      const sessionOpen = isSessionOpen(roomStateRef.current)
+      setConnectionMessage(
+        sessionOpen ? 'Joining active session...' : 'Waiting for the facilitator to open a planning session...',
+      )
+      if (sessionOpen) {
+        tryJoinPendingParticipant(true)
+      }
+      return
+    }
+
+    setConnectionMessage('Connecting to the planning backend...')
     clearOrchestratorScrollSyncTimer()
     setIsFollowingOrchestrator(true)
     setLocalSelectedIssueIdOverride(null)
@@ -1141,10 +1260,9 @@ export default function HomePage() {
       }
 
       isConnectingRef.current = false
-      isConnectedRef.current = true
       setIsConnecting(false)
-      setIsConnected(true)
-      send({ type: 'join', name: normalizedName })
+      setIsSocketConnected(true)
+      setConnectionMessage('Waiting for the facilitator to open a planning session...')
     })
 
     nextSocket.addEventListener('message', (event) => {
@@ -1167,13 +1285,32 @@ export default function HomePage() {
 
         const me = serverEvent.state.participants.find((participant) => participant.id === serverEvent.state.myId)
         if (me) {
+          isConnectedRef.current = true
+          setIsConnected(true)
+          setConnectionMessage('')
           setJoinedName(me.name)
           if (!isProfileEditingRef.current) {
             setNameInput(me.name)
           }
+        } else {
+          if (isConnectedRef.current) {
+            isConnectedRef.current = false
+            setIsConnected(false)
+          }
+
+          if (pendingJoinNameRef.current) {
+            if (isSessionOpen(serverEvent.state)) {
+              setConnectionMessage('Joining active session...')
+              tryJoinPendingParticipant()
+            } else {
+              setConnectionMessage('Waiting for the facilitator to open a planning session...')
+            }
+          }
         }
 
         if (!canFollowCurrentOrchestrator()) {
+          blurActiveTicketField()
+          releaseAllIssuePresence()
           isFollowingOrchestratorRef.current = true
           setIsFollowingOrchestrator(true)
           localSelectedIssueIdOverrideRef.current = null
@@ -1182,6 +1319,8 @@ export default function HomePage() {
         } else {
           const hasNextTicketTransition = previousRoomState.revealed && !serverEvent.state.revealed
           if (hasNextTicketTransition) {
+            blurActiveTicketField()
+            releaseAllIssuePresence()
             isFollowingOrchestratorRef.current = true
             setIsFollowingOrchestrator(true)
             localSelectedIssueIdOverrideRef.current = null
@@ -1240,6 +1379,9 @@ export default function HomePage() {
       releaseAllIssuePresence()
       clearOrchestratorScrollSyncTimer()
       socketRef.current = null
+      setIsSocketConnected(false)
+      pendingJoinNameRef.current = ''
+      lastJoinAttemptAtRef.current = 0
       isConnectedRef.current = false
       isConnectingRef.current = false
       setIsConnected(false)
@@ -1318,6 +1460,8 @@ export default function HomePage() {
       return
     }
 
+    blurActiveTicketField()
+    releaseAllIssuePresence()
     isFollowingOrchestratorRef.current = true
     setIsFollowingOrchestrator(true)
     localSelectedIssueIdOverrideRef.current = null
@@ -1450,7 +1594,6 @@ export default function HomePage() {
     const storedJiraConfig = readStoredJiraConfig()
     if (storedJiraConfig) {
       setJiraConfig(storedJiraConfig)
-      shouldAutoLoadJiraAfterConnectRef.current = true
     }
 
     return () => {
@@ -1476,6 +1619,37 @@ export default function HomePage() {
     setIsCrdtDebugOpen(false)
   }, [selectedIssueId])
 
+  useEffect(() => {
+    const nextBaselineByIssue = new Map<string, Map<string, string>>()
+    const nextIssueKeyById = new Map<string, string>()
+
+    if (jiraIssues) {
+      for (const group of jiraIssues.groups) {
+        for (const issue of group.issues) {
+          const normalizedIssueId = normalizeIssueId(issue.id)
+          if (!normalizedIssueId) {
+            continue
+          }
+
+          nextIssueKeyById.set(normalizedIssueId, normalizeIssueKey(issue.key))
+          const issueBaseline = new Map<string, string>()
+          for (const field of issue.fields) {
+            const normalizedFieldId = normalizeEditorFieldId(field.id)
+            if (!normalizedFieldId) {
+              continue
+            }
+            issueBaseline.set(normalizedFieldId, normalizeEditorText(field.value))
+          }
+          nextBaselineByIssue.set(normalizedIssueId, issueBaseline)
+        }
+      }
+    }
+
+    jiraFieldBaselineByIssueRef.current = nextBaselineByIssue
+    jiraIssueKeyByIdRef.current = nextIssueKeyById
+    jiraFieldLastRequestedValueRef.current.clear()
+  }, [jiraIssues])
+
   const loadedJiraTicketCount = useMemo(
     () => (jiraIssues ? jiraIssues.groups.reduce((count, group) => count + group.issues.length, 0) : 0),
     [jiraIssues],
@@ -1493,13 +1667,6 @@ export default function HomePage() {
   }, [loadedJiraTicketCount, hasAutoCollapsedJiraConfig])
 
   useEffect(() => {
-    if (shouldAutoLoadJiraAfterConnectRef.current && isConnected && roomState.myId && !isJiraLoading) {
-      shouldAutoLoadJiraAfterConnectRef.current = false
-      void loadJiraIssues()
-    }
-  }, [isConnected, isJiraLoading, roomState.myId])
-
-  useEffect(() => {
     if (isConnected && canFollowCurrentOrchestrator() && isFollowingOrchestrator && middleScrollRef.current) {
       window.requestAnimationFrame(() => applyOrchestratorScrollSync())
     }
@@ -1515,6 +1682,63 @@ export default function HomePage() {
     roomState.orchestratorView.issueId,
     roomState.orchestratorView.targetId,
     roomState.orchestratorView.scrollTop,
+  ])
+
+  useEffect(() => {
+    if (!isConnected || !isCurrentUserOrchestrator() || !hasJiraSyncConfig(jiraConfig)) {
+      return
+    }
+
+    for (const draft of roomState.issueWorkspace.drafts) {
+      const normalizedIssueId = normalizeIssueId(draft.issueId)
+      if (!normalizedIssueId) {
+        continue
+      }
+
+      const issueBaseline = jiraFieldBaselineByIssueRef.current.get(normalizedIssueId)
+      if (!issueBaseline) {
+        continue
+      }
+
+      const issueKey = normalizeIssueKey(draft.issueKey) || jiraIssueKeyByIdRef.current.get(normalizedIssueId) || ''
+      if (!issueKey) {
+        continue
+      }
+
+      for (const field of draft.fields) {
+        const normalizedFieldId = normalizeEditorFieldId(field.id)
+        if (!normalizedFieldId || !issueBaseline.has(normalizedFieldId)) {
+          continue
+        }
+
+        if (!isIssueFieldIdleForSync(normalizedIssueId, normalizedFieldId)) {
+          continue
+        }
+
+        const nextValue = normalizeEditorText(field.value)
+        const baselineValue = issueBaseline.get(normalizedFieldId) ?? ''
+        if (nextValue === baselineValue) {
+          continue
+        }
+
+        const syncKey = `${normalizedIssueId}:${normalizedFieldId}`
+        if (
+          jiraFieldSyncInFlightRef.current.has(syncKey) &&
+          jiraFieldLastRequestedValueRef.current.get(syncKey) === nextValue
+        ) {
+          continue
+        }
+
+        void syncIssueFieldToJira(normalizedIssueId, issueKey, normalizedFieldId, nextValue)
+      }
+    }
+  }, [
+    isConnected,
+    jiraConfig,
+    roomState.issueWorkspace.drafts,
+    roomState.issueWorkspace.presence,
+    roomState.myId,
+    roomState.orchestratorId,
   ])
 
   const votedCount = useMemo(() => roomState.participants.filter((participant) => participant.hasVoted).length, [roomState.participants])
@@ -1650,7 +1874,11 @@ export default function HomePage() {
       {!isConnected ? (
         <section className="join-view panel">
           <h2>Join planning room</h2>
-          <p>Enter your name and join. Returning users connect automatically.</p>
+          <p>
+            {isSocketConnected
+              ? 'Session is not open yet. Stay on this page and you will be joined automatically once it starts.'
+              : 'Enter your name. You can join without logging in.'}
+          </p>
           <form
             className="join-form"
             onSubmit={(event) => {
@@ -1668,9 +1896,12 @@ export default function HomePage() {
               onChange={(event) => handleNameInput(event.currentTarget.value)}
             />
             <button type="submit" className="primary" disabled={isConnecting}>
-              {isConnecting ? 'Connecting...' : 'Join'}
+              {isConnecting ? 'Connecting...' : isSocketConnected ? 'Waiting for session...' : 'Join'}
             </button>
           </form>
+          <p className="jira-config-note">
+            Facilitator? Open the <Link href="/dashboard">dashboard</Link> to connect Jira and start the session.
+          </p>
         </section>
       ) : (
         <section className="workspace">
@@ -2067,79 +2298,15 @@ export default function HomePage() {
             <div className="panel-heading">
               <h2>Jira Tickets</h2>
               <div className="jira-panel-actions">
-                <button type="button" className="text-button compact" onClick={() => setIsJiraConfigCollapsed((value) => !value)}>
-                  {isJiraConfigCollapsed ? 'Show config' : 'Hide config'}
-                </button>
-                <button type="button" className="secondary" onClick={() => void loadJiraIssues()} disabled={isJiraLoading}>
-                  {isJiraLoading ? 'Loading...' : 'Refresh'}
-                </button>
+                <Link href="/dashboard" className="secondary button-link">
+                  Open dashboard
+                </Link>
               </div>
             </div>
 
-            {isJiraConfigCollapsed ? (
-              <p className="jira-config-note">Jira configuration is collapsed while loaded tickets are available.</p>
-            ) : (
-              <form
-                className="jira-form"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  void loadJiraIssues()
-                }}
-              >
-                <label htmlFor="jira-url">Jira URL</label>
-                <input
-                  id="jira-url"
-                  placeholder="your-team.atlassian.net"
-                  value={jiraConfig.baseUrl}
-                  onChange={(event) => handleJiraConfigInput({ ...jiraConfig, baseUrl: event.currentTarget.value })}
-                />
-
-                <label htmlFor="jira-email">Jira account email</label>
-                <input
-                  id="jira-email"
-                  type="email"
-                  placeholder="team.member@company.com"
-                  value={jiraConfig.email}
-                  onChange={(event) => handleJiraConfigInput({ ...jiraConfig, email: event.currentTarget.value })}
-                />
-
-                <label htmlFor="jira-token">Jira API token</label>
-                <input
-                  id="jira-token"
-                  type="password"
-                  placeholder="Paste API token"
-                  value={jiraConfig.apiToken}
-                  onChange={(event) => handleJiraConfigInput({ ...jiraConfig, apiToken: event.currentTarget.value })}
-                />
-
-                <label htmlFor="jira-ticket-prefix">Ticket prefix</label>
-                <input
-                  id="jira-ticket-prefix"
-                  placeholder="TEAM"
-                  value={jiraConfig.ticketPrefix}
-                  onChange={(event) => handleJiraConfigInput({ ...jiraConfig, ticketPrefix: event.currentTarget.value })}
-                />
-
-                <div className="jira-actions">
-                  <button type="submit" className="secondary" disabled={isJiraLoading}>
-                    {isJiraLoading ? 'Loading...' : 'Load tickets'}
-                  </button>
-                  <button
-                    type="button"
-                    className="text-button"
-                    onClick={() => {
-                      const cleared = createDefaultJiraConfig()
-                      setJiraConfig(cleared)
-                      setJiraError('')
-                      setJiraMessage('')
-                      window.localStorage.removeItem(JIRA_STORAGE_KEY)
-                    }}
-                  >
-                    Clear
-                  </button>
-                </div>
-              </form>
-            )}
+            <p className="jira-config-note">
+              Jira credentials and session start are managed from the dashboard. Once started, tickets appear here for everyone.
+            </p>
 
             {jiraError ? <p className="jira-error">{jiraError}</p> : jiraMessage ? <p className="jira-message">{jiraMessage}</p> : null}
 
