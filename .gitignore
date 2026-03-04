@@ -13,6 +13,7 @@ dist-ssr
 .next
 out
 *.local
+.convex/
 
 # Editor directories and files
 .vscode/*

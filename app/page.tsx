@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Y from 'yjs'
 import CodeMirrorField from '../components/CodeMirrorField'
+import { createRoomConnection, type RoomConnection } from '../src/lib/roomConnection'
 import {
   ESTIMATE_OPTIONS,
   type ClientEvent,
@@ -35,7 +36,6 @@ type IssueFieldDoc = {
 
 const STORAGE_KEY = 'scrummer.display_name'
 const JIRA_STORAGE_KEY = 'scrummer.jira_config'
-const DEFAULT_SERVER_PORT = '3101'
 const CRDT_UPDATE_MAX_BYTES = 1024 * 256
 const CRDT_REMOTE_ORIGIN = Symbol('crdt-remote')
 const CRDT_BOOTSTRAP_ORIGIN = Symbol('crdt-bootstrap')
@@ -397,7 +397,7 @@ export default function HomePage() {
 
   const [hasAutoCollapsedJiraConfig, setHasAutoCollapsedJiraConfig] = useState(false)
 
-  const socketRef = useRef<WebSocket | null>(null)
+  const socketRef = useRef<RoomConnection | null>(null)
   const isConnectedRef = useRef(false)
   const isConnectingRef = useRef(false)
   const isProfileEditingRef = useRef(false)
@@ -450,17 +450,6 @@ export default function HomePage() {
     jiraIssuesRef.current = jiraIssues
   }, [jiraIssues])
 
-  const socketUrl = (): string => {
-    const configured =
-      process.env.NEXT_PUBLIC_WS_URL?.trim() || process.env.NEXT_PUBLIC_VITE_WS_URL?.trim() || process.env.VITE_WS_URL?.trim()
-    if (configured) {
-      return configured
-    }
-
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${protocol}://${window.location.hostname}:${DEFAULT_SERVER_PORT}/ws`
-  }
-
   const apiBaseUrl = (): string => {
     const configured =
       process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ||
@@ -469,7 +458,7 @@ export default function HomePage() {
     if (configured) {
       return configured.replace(/\/$/, '')
     }
-    return `${window.location.protocol}//${window.location.hostname}:${DEFAULT_SERVER_PORT}`
+    return window.location.origin
   }
 
   const send = (event: ClientEvent): void => {
@@ -1136,7 +1125,14 @@ export default function HomePage() {
     isConnectingRef.current = true
     setIsConnecting(true)
 
-    const nextSocket = new WebSocket(socketUrl())
+    const nextSocket = createRoomConnection()
+    if (!nextSocket) {
+      isConnectingRef.current = false
+      setIsConnecting(false)
+      setConnectionMessage('Set NEXT_PUBLIC_CONVEX_URL to connect to the shared room backend.')
+      return
+    }
+
     socketRef.current = nextSocket
 
     nextSocket.addEventListener('open', () => {
@@ -1765,10 +1761,27 @@ export default function HomePage() {
                             ) : null}
                             <CodeMirrorField
                               value={field.value}
-                              yText={selectedIssueId ? getIssueFieldYText(selectedIssueId, field) : null}
+                              yText={null}
                               minRows={field.id === 'description' ? 6 : 3}
                               busy={isTargetEditedByOthers(fieldPresenceTarget)}
                               markdownMode={shouldUseMarkdownEditor(field.id)}
+                              onInput={(value) => {
+                                if (!selectedIssueId || !selectedIssueKey) {
+                                  return
+                                }
+
+                                send({
+                                  type: 'set_issue_field',
+                                  issueId: selectedIssueId,
+                                  issueKey: selectedIssueKey,
+                                  issueUrl: selectedIssueDraft?.issueUrl ?? selectedIssueFromJira?.url ?? '',
+                                  field: {
+                                    id: field.id,
+                                    label: field.label,
+                                    value,
+                                  },
+                                })
+                              }}
                               onFocus={() => handleIssueFieldFocus(fieldPresenceTarget)}
                               onBlur={() => handleIssueFieldBlur(fieldPresenceTarget)}
                             />

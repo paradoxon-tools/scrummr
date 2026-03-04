@@ -1,6 +1,6 @@
 # Scrummer v1
 
-Single-room scrum planning poker app built with Next.js and Bun.
+Single-room scrum planning poker app built with Next.js + Convex.
 
 ## Features
 
@@ -18,38 +18,44 @@ Single-room scrum planning poker app built with Next.js and Bun.
 Install dependencies:
 
 ```bash
-bun install
+npm install
 ```
 
-Run both backend and frontend together:
+Set your Convex deployment URL:
 
 ```bash
-bun run dev:all
+# .env.local
+NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
 ```
 
-Or run them separately in two terminals:
+Run frontend + Convex together:
 
 ```bash
-bun run dev:server
+npm run dev:all
+```
+
+Or run them separately:
+
+```bash
+npm run dev:convex
 ```
 
 ```bash
-bun run dev
+npm run dev
 ```
 
-The frontend runs on `http://localhost:5173` and connects to `ws://localhost:3101/ws`.
+The frontend runs on `http://localhost:5173`.
 
 ## Optional configuration
 
-- `WS_PORT` controls the Bun WebSocket server port (default `3101`).
-- `NEXT_PUBLIC_WS_URL` overrides the client WebSocket URL.
+- `NEXT_PUBLIC_CONVEX_URL` points the app to your Convex deployment.
 - `NEXT_PUBLIC_API_BASE_URL` overrides the base URL for backend HTTP calls (used by Jira integration).
 
 ## Jira integration notes
 
-- Scrummer calls Jira through the Bun backend at `POST /api/jira/issues`.
+- Scrummer calls Jira through the Next.js route at `POST /api/jira/issues`.
 - The Jira request uses the ticket prefix (project key, for example `TEAM`) to load tickets, then groups them by sprint so each current/future sprint appears as its own bucket.
-- Successful Jira loads are stored on the server and broadcast through room snapshots so late joiners and other participants share the same ticket buckets.
+- Successful Jira loads are stored in Convex room state so late joiners and other participants share the same ticket buckets.
 - Ticket editor changes stay local to the room state and are broadcast to all connected users (no write-back to Jira yet).
 - Presence badges in the editor are local-collaboration hints and are cleared when users blur fields or disconnect.
 - Jira credentials are stored in your browser `localStorage` for convenience in this prototype.
