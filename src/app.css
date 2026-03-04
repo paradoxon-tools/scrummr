@@ -1,9 +1,23 @@
 :root {
-  font-family: 'Trebuchet MS', 'Gill Sans', 'Segoe UI Variable Text', sans-serif;
-  color: #102139;
-  background: radial-gradient(circle at 8% 12%, #f8f0cf, transparent 45%),
+  --app-text-color: #102139;
+  --app-background: radial-gradient(circle at 8% 12%, #f8f0cf, transparent 45%),
     radial-gradient(circle at 88% 84%, #ffd9cc, transparent 45%),
     linear-gradient(155deg, #f2f5ff 0%, #f8f6eb 50%, #ebf7f0 100%);
+  --surface-bg: rgba(255, 255, 255, 0.82);
+  --surface-border: rgba(16, 33, 57, 0.12);
+  --surface-shadow: 0 16px 34px rgba(16, 33, 57, 0.12);
+  --input-border: #a4b0c5;
+  --input-bg: #ffffff;
+  --editor-border: #c5d5ea;
+  --editor-bg: #ffffff;
+  --button-secondary-text: #0f2a4b;
+  --button-secondary-bg: linear-gradient(135deg, #dbe9ff 0%, #cce3fc 100%);
+  --button-secondary-border: #b8cee8;
+  --button-text-text: #4c5f7e;
+  --button-text-border: #b8c5db;
+  font-family: 'Trebuchet MS', 'Gill Sans', 'Segoe UI Variable Text', sans-serif;
+  color: var(--app-text-color);
+  background: var(--app-background);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -20,6 +34,9 @@ body {
   min-height: 100vh;
   height: 100vh;
   overflow: hidden;
+  color: var(--app-text-color);
+  background: var(--app-background);
+  transition: color 150ms ease, background 150ms ease;
 }
 
 #app {
@@ -39,9 +56,9 @@ textarea {
 }
 
 .code-field .cm-editor {
-  border: 1px solid #c5d5ea;
+  border: 1px solid var(--editor-border);
   border-radius: 10px;
-  background: #ffffff;
+  background: var(--editor-bg);
 }
 
 .code-field .cm-editor.cm-focused {
@@ -94,11 +111,31 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.button-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  font-weight: 700;
+  transition: transform 150ms ease, filter 150ms ease, opacity 150ms ease;
+}
+
+.button-link:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
+}
+
+.theme-toggle {
+  white-space: nowrap;
+  min-width: 8.7rem;
+}
+
 input,
 textarea {
-  border: 1px solid #a4b0c5;
+  border: 1px solid var(--input-border);
   border-radius: 10px;
-  background: #ffffff;
+  background: var(--input-bg);
   color: inherit;
   padding: 0.62rem 0.74rem;
 }
@@ -117,6 +154,32 @@ textarea {
   display: grid;
   grid-template-rows: auto 1fr;
   gap: var(--app-row-gap);
+}
+
+.dashboard-shell {
+  min-height: calc(100vh - 4.5rem);
+  padding: 1rem;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  overflow: auto;
+}
+
+.dashboard-panel {
+  width: min(700px, 100%);
+  display: grid;
+  gap: 0.75rem;
+}
+
+.dashboard-panel h1 {
+  margin: 0;
+}
+
+.dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 .app-shell.connected {
@@ -228,11 +291,11 @@ textarea {
 }
 
 .panel {
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--surface-bg);
   border-radius: 20px;
-  border: 1px solid rgba(16, 33, 57, 0.12);
+  border: 1px solid var(--surface-border);
   padding: 1rem;
-  box-shadow: 0 16px 34px rgba(16, 33, 57, 0.12);
+  box-shadow: var(--surface-shadow);
 }
 
 .join-view {
@@ -274,16 +337,16 @@ textarea {
 }
 
 .secondary {
-  color: #0f2a4b;
-  background: linear-gradient(135deg, #dbe9ff 0%, #cce3fc 100%);
-  border: 1px solid #b8cee8;
+  color: var(--button-secondary-text);
+  background: var(--button-secondary-bg);
+  border: 1px solid var(--button-secondary-border);
   padding: 0.6rem 0.78rem;
 }
 
 .text-button {
-  color: #4c5f7e;
+  color: var(--button-text-text);
   background: transparent;
-  border: 1px dashed #b8c5db;
+  border: 1px dashed var(--button-text-border);
   padding: 0.6rem 0.78rem;
 }
 
@@ -813,6 +876,22 @@ input.busy {
   gap: 0.3rem;
 }
 
+.orchestrator-follow-strip {
+  margin: 0.3rem 0 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.orchestrator-follow-strip p {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #486280;
+}
+
+.orchestrator-follow-strip strong {
+  color: #2b4f79;
+}
+
 .follow-button {
   font-size: 0.72rem;
   white-space: nowrap;
@@ -1132,6 +1211,156 @@ input.busy {
   background: #ffe7e7;
   color: #7f2a2a;
   font-weight: 700;
+}
+
+:root[data-theme='dark'] {
+  --app-text-color: #dbe6fb;
+  --app-background: radial-gradient(circle at 12% 14%, #243047, transparent 45%),
+    radial-gradient(circle at 82% 80%, #1f2f3e, transparent 42%),
+    linear-gradient(155deg, #0a1527 0%, #0f1d33 52%, #10231f 100%);
+  --surface-bg: rgba(17, 27, 43, 0.86);
+  --surface-border: rgba(127, 161, 211, 0.28);
+  --surface-shadow: 0 18px 36px rgba(1, 5, 14, 0.55);
+  --input-border: #4b638a;
+  --input-bg: #111d31;
+  --editor-border: #4b638a;
+  --editor-bg: #111d31;
+  --button-secondary-text: #d5e6ff;
+  --button-secondary-bg: linear-gradient(135deg, #294364 0%, #234163 100%);
+  --button-secondary-border: #5d7fab;
+  --button-text-text: #afc2e4;
+  --button-text-border: #647e9f;
+  color-scheme: dark;
+}
+
+:root[data-theme='dark'] .eyebrow,
+:root[data-theme='dark'] .panel-heading p,
+:root[data-theme='dark'] .summary p,
+:root[data-theme='dark'] .profile label,
+:root[data-theme='dark'] .profile small,
+:root[data-theme='dark'] .jira-config-note,
+:root[data-theme='dark'] .jira-message,
+:root[data-theme='dark'] .jira-empty,
+:root[data-theme='dark'] .participants em,
+:root[data-theme='dark'] .follow-status,
+:root[data-theme='dark'] .presence-indicator,
+:root[data-theme='dark'] .issue-update-meta,
+:root[data-theme='dark'] .jira-issue-select small,
+:root[data-theme='dark'] .message {
+  color: #9eb4d9;
+}
+
+:root[data-theme='dark'] .ticket-placeholder,
+:root[data-theme='dark'] .estimate-group,
+:root[data-theme='dark'] .issue-field,
+:root[data-theme='dark'] .raw-ticket-data,
+:root[data-theme='dark'] .raw-ticket-data pre,
+:root[data-theme='dark'] .crdt-debug-list li,
+:root[data-theme='dark'] .jira-list li.selected,
+:root[data-theme='dark'] .status-badge,
+:root[data-theme='dark'] .subtask-jira-link,
+:root[data-theme='dark'] .vote-card,
+:root[data-theme='dark'] .participant-follow-state,
+:root[data-theme='dark'] .follow-countdown,
+:root[data-theme='dark'] .issue-meta span {
+  background: #13233a;
+  border-color: #4c678f;
+  color: #c2d5f3;
+}
+
+:root[data-theme='dark'] .estimated-badge {
+  background: #14302a;
+  border-color: #3d8970;
+  color: #8edbbd;
+}
+
+:root[data-theme='dark'] .jira-bucket h3 {
+  background: linear-gradient(180deg, rgba(17, 30, 49, 0.98) 0%, rgba(17, 30, 49, 0.92) 100%);
+}
+
+:root[data-theme='dark'] .jira-list li,
+:root[data-theme='dark'] .subtask-list li,
+:root[data-theme='dark'] .participants li,
+:root[data-theme='dark'] .jira-bucket {
+  border-color: #3f5679;
+}
+
+:root[data-theme='dark'] .ticket-placeholder h3,
+:root[data-theme='dark'] .issue-header strong,
+:root[data-theme='dark'] .issue-header a,
+:root[data-theme='dark'] .jira-issue-select strong,
+:root[data-theme='dark'] .subtask-id,
+:root[data-theme='dark'] .participants h2,
+:root[data-theme='dark'] .participant-breakdown h3 {
+  color: #9fc7ff;
+}
+
+:root[data-theme='dark'] .ticket-placeholder p,
+:root[data-theme='dark'] .issue-header p,
+:root[data-theme='dark'] .subtask-title,
+:root[data-theme='dark'] .person span,
+:root[data-theme='dark'] .jira-issue-select p,
+:root[data-theme='dark'] .jira-bucket h3 span,
+:root[data-theme='dark'] .follow-status.ticket,
+:root[data-theme='dark'] .follow-status {
+  color: #c3d3ec;
+}
+
+:root[data-theme='dark'] .message {
+  background: #3a1f27;
+  border-color: #7d4250;
+  color: #f0b8c4;
+}
+
+:root[data-theme='dark'] .jira-error {
+  color: #ff9f9f;
+}
+
+:root[data-theme='dark'] .code-field .cm-content,
+:root[data-theme='dark'] .code-field .cm-placeholder {
+  color: #dbe6fb;
+}
+
+:root[data-theme='dark'] input::placeholder,
+:root[data-theme='dark'] textarea::placeholder {
+  color: #7f97bd;
+}
+
+:root[data-theme='dark'] .issue-field.follow-highlight {
+  background: hsl(var(--follow-hue) 45% 16% / 0.9);
+  border-color: hsl(var(--follow-hue) 62% 66% / 0.95);
+}
+
+:root[data-theme='dark'] .issue-field.follow-highlight .issue-field-label {
+  color: hsl(var(--follow-hue) 85% 82%);
+}
+
+:root[data-theme='dark'] .issue-field.busy,
+:root[data-theme='dark'] .code-field.busy .cm-editor,
+:root[data-theme='dark'] textarea.busy,
+:root[data-theme='dark'] input.busy {
+  border-color: #8f6e49;
+  background: #372b21;
+}
+
+:root[data-theme='dark'] .participant-follow-state {
+  background: #133326;
+  border-color: #3f7662;
+  color: #9ad7ba;
+}
+
+:root[data-theme='dark'] .participant-follow-state.manual {
+  background: #382a20;
+  border-color: #8d6642;
+  color: #e5b98a;
+}
+
+:root[data-theme='dark'] .orchestrator-follow-strip p {
+  color: #9eb4d9;
+}
+
+:root[data-theme='dark'] .orchestrator-follow-strip strong {
+  color: #9fc7ff;
 }
 
 @media (max-width: 980px) {

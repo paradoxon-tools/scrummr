@@ -2121,19 +2121,25 @@ export default function HomePage() {
           <section className="participants">
             <div className="participants-heading">
               <h2>Participants</h2>
-              {isConnected && canFollowCurrentOrchestrator() ? (
-                <div className="follow-controls">
+            </div>
+
+            {orchestratorParticipant ? (
+              <div className="orchestrator-follow-strip">
+                <p>
+                  Orchestrator: <strong>{orchestratorParticipant.name}</strong>
+                </p>
+                {isConnected && canFollowCurrentOrchestrator() ? (
                   <button
                     type="button"
                     className={`text-button compact follow-button${isFollowingOrchestrator ? ' active' : ''}`}
                     onClick={followOrchestrator}
                     disabled={isFollowingOrchestrator}
                   >
-                    {isFollowingOrchestrator ? 'Following orchestrator' : 'Follow orchestrator'}
+                    {isFollowingOrchestrator ? 'Following orchestrator' : 'Re-follow orchestrator'}
                   </button>
-                </div>
-              ) : null}
-            </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <ul>
               {participantsForDisplay.map((participant) => (
