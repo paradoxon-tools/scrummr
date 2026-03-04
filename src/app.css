@@ -403,7 +403,9 @@ textarea {
   background: #fff8ef;
 }
 
-.issue-fields label {
+.issue-fields label,
+.issue-field-label {
+  margin: 0;
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;

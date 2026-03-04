@@ -16,6 +16,7 @@
     type RoomStateSnapshot,
     type ServerEvent,
   } from './lib/protocol'
+  import CodeMirrorField from './lib/CodeMirrorField.svelte'
 
   type JiraConfig = {
     baseUrl: string
@@ -479,39 +480,9 @@
     return parsed.toLocaleString()
   }
 
-  const resizeTextareaToContent = (node: HTMLTextAreaElement): void => {
-    node.style.height = '0px'
-    node.style.height = `${node.scrollHeight}px`
-  }
-
-  const autoSizeTextarea = (node: HTMLTextAreaElement, value: string) => {
-    node.style.resize = 'none'
-    node.style.overflowY = 'hidden'
-
-    const resize = (): void => {
-      resizeTextareaToContent(node)
-    }
-
-    const handleInput = (): void => {
-      resize()
-    }
-
-    void tick().then(resize)
-    node.addEventListener('input', handleInput)
-
-    return {
-      update(nextValue: string): void {
-        if (nextValue === value) {
-          return
-        }
-
-        value = nextValue
-        void tick().then(resize)
-      },
-      destroy(): void {
-        node.removeEventListener('input', handleInput)
-      },
-    }
+  const shouldUseMarkdownEditor = (fieldId: string): boolean => {
+    const normalizedId = normalizeEditorFieldId(fieldId)
+    return normalizedId === 'description' || normalizedId.includes('description') || normalizedId.includes('comment')
   }
 
   const selectIssue = (issue: JiraIssue, group: JiraIssueGroup): void => {
@@ -1226,19 +1197,19 @@
                 {@const fieldPresenceTarget = fieldPresenceTargetId(field.id)}
                 {@const fieldPresenceLabel = getPresenceLabelForTarget(fieldPresenceTarget)}
                 <div class="issue-field" class:busy={isTargetEditedByOthers(fieldPresenceTarget)}>
-                  <label for={`issue-field-${field.id}`}>{field.label}</label>
+                  <p class="issue-field-label">{field.label}</p>
                   {#if fieldPresenceLabel}
                     <p class="presence-indicator" class:others={isTargetEditedByOthers(fieldPresenceTarget)}>{fieldPresenceLabel}</p>
                   {/if}
-                  <textarea
-                    id={`issue-field-${field.id}`}
-                    rows={field.id === 'description' ? 6 : 3}
+                  <CodeMirrorField
                     value={field.value}
-                    use:autoSizeTextarea={field.value}
+                    minRows={field.id === 'description' ? 6 : 3}
+                    busy={isTargetEditedByOthers(fieldPresenceTarget)}
+                    markdownMode={shouldUseMarkdownEditor(field.id)}
                     on:focus={() => setIssuePresence(fieldPresenceTarget, true)}
                     on:blur={() => setIssuePresence(fieldPresenceTarget, false)}
-                    on:input={(event) => setIssueField(field, (event.currentTarget as HTMLTextAreaElement).value)}
-                  ></textarea>
+                    on:input={(event) => setIssueField(field, event.detail)}
+                  />
                 </div>
               {/each}
             </div>
