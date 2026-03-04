@@ -1,10 +1,10 @@
 import type { Metadata } from 'next'
 import type { ReactNode } from 'react'
-import '../src/app.css'
+import './globals.css'
 
 export const metadata: Metadata = {
   title: 'Scrummer',
-  description: 'Shared planning poker with Jira ticket workspace',
+  description: 'A clean Next.js app ready for Vercel.',
 }
 
 type RootLayoutProps = {

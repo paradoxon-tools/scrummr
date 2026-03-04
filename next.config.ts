@@ -1,8 +1,5 @@
 import type { NextConfig } from 'next'
 
-const nextConfig: NextConfig = {
-  reactStrictMode: true,
-  allowedDevOrigins: ['cloud.chennemann.de'],
-}
+const nextConfig: NextConfig = {}
 
 export default nextConfig
