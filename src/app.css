@@ -702,6 +702,24 @@ input.busy {
   white-space: nowrap;
 }
 
+.participant-follow-state {
+  font-size: 0.64rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #2e6a4f;
+  background: #eaf7f0;
+  border: 1px solid #b9ddc8;
+  border-radius: 999px;
+  padding: 0.06rem 0.34rem;
+  flex: 0 0 auto;
+}
+
+.participant-follow-state.manual {
+  color: #6f4c2a;
+  background: #fff5e7;
+  border-color: #e7c49b;
+}
+
 .participant-name-input {
   min-width: 0;
   width: 100%;

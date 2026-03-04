@@ -94,7 +94,7 @@ export type IssueWorkspaceSnapshot = {
 export type OrchestratorViewSnapshot = {
   issueId: string | null
   targetId: string | null
-  scrollRatio: number
+  scrollTop: number
 }
 
 export type ClientEvent =
@@ -155,7 +155,11 @@ export type ClientEvent =
       type: 'set_orchestrator_view'
       issueId: string | null
       targetId: string | null
-      scrollRatio: number
+      scrollTop: number
+    }
+  | {
+      type: 'set_follow_orchestrator'
+      following: boolean
     }
 
 export type ParticipantView = {
@@ -163,6 +167,7 @@ export type ParticipantView = {
   name: string
   colorHue: number
   isOrchestrator: boolean
+  isFollowingOrchestrator: boolean
   hasVoted: boolean
   vote: EstimateOption | null
 }

@@ -54,7 +54,7 @@
   const createEmptyOrchestratorView = (): RoomStateSnapshot['orchestratorView'] => ({
     issueId: null,
     targetId: null,
-    scrollRatio: 0,
+    scrollTop: 0,
   })
 
   const createEmptyState = (): RoomStateSnapshot => ({
@@ -120,10 +120,11 @@
   let isApplyingFollowScroll = false
   let orchestratorFocusedTargetId: string | null = null
   let orchestratorScrollSyncTimer: number | undefined
-  let pendingOrchestratorScrollRatio: number | null = null
+  let pendingOrchestratorScrollTop: number | null = null
   let lastSentOrchestratorViewIssueId: string | null = null
   let lastSentOrchestratorViewTargetId: string | null = null
-  let lastSentOrchestratorScrollRatio = -1
+  let lastSentOrchestratorScrollTop = -1
+  let lastSentFollowState: boolean | null = null
 
   const socketUrl = (): string => {
     const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim()
@@ -837,7 +838,7 @@
     return normalizedId === 'description' || normalizedId.includes('description') || normalizedId.includes('comment')
   }
 
-  const normalizeScrollRatio = (value: number): number => {
+  const normalizeScrollTop = (value: number): number => {
     if (!Number.isFinite(value)) {
       return 0
     }
@@ -846,11 +847,7 @@
       return 0
     }
 
-    if (value > 1) {
-      return 1
-    }
-
-    return value
+    return Math.floor(value)
   }
 
   const isCurrentUserOrchestrator = (): boolean => roomState.orchestratorId !== null && roomState.orchestratorId === roomState.myId
@@ -890,7 +887,7 @@
     }
 
     const maxScroll = middleScrollElement.scrollHeight - middleScrollElement.clientHeight
-    const nextTop = maxScroll > 0 ? normalizeScrollRatio(orchestratorView.scrollRatio) * maxScroll : 0
+    const nextTop = maxScroll > 0 ? Math.min(normalizeScrollTop(orchestratorView.scrollTop), maxScroll) : 0
     if (!force && Math.abs(middleScrollElement.scrollTop - nextTop) < 2) {
       return
     }
@@ -907,6 +904,7 @@
     followSuspensionReason = 'none'
     localSelectedIssueIdOverride = null
     clearFollowResumeTimer()
+    syncOrchestratorFollowState(false)
     void tick().then(() => applyOrchestratorScrollSync(true))
   }
 
@@ -937,6 +935,7 @@
     isFollowingOrchestrator = false
     followSuspensionReason = reason
     startFollowResumeTimer()
+    syncOrchestratorFollowState(false)
   }
 
   const noteFollowUserInteraction = (reason: Exclude<FollowSuspensionReason, 'none'>): void => {
@@ -952,35 +951,44 @@
   const clearOrchestratorScrollSyncTimer = (): void => {
     window.clearTimeout(orchestratorScrollSyncTimer)
     orchestratorScrollSyncTimer = undefined
-    pendingOrchestratorScrollRatio = null
+    pendingOrchestratorScrollTop = null
   }
 
-  const middleScrollRatio = (): number => {
+  const middleScrollTop = (): number => {
     if (!middleScrollElement) {
       return 0
     }
 
-    const maxScroll = middleScrollElement.scrollHeight - middleScrollElement.clientHeight
-    if (maxScroll <= 0) {
-      return 0
-    }
-
-    return normalizeScrollRatio(middleScrollElement.scrollTop / maxScroll)
+    return normalizeScrollTop(middleScrollElement.scrollTop)
   }
 
-  const syncOrchestratorViewState = (force = false, explicitScrollRatio?: number): void => {
+  const syncOrchestratorFollowState = (force = false): void => {
+    if (!isConnected || !roomState.myId || !roomState.participants.some((participant) => participant.id === roomState.myId)) {
+      return
+    }
+
+    const following = canFollowCurrentOrchestrator() ? isFollowingOrchestrator : true
+    if (!force && lastSentFollowState === following) {
+      return
+    }
+
+    lastSentFollowState = following
+    send({ type: 'set_follow_orchestrator', following })
+  }
+
+  const syncOrchestratorViewState = (force = false, explicitScrollTop?: number): void => {
     if (!isConnected || !isCurrentUserOrchestrator()) {
       return
     }
 
     const issueId = roomState.issueWorkspace.selectedIssueId
     const targetId = issueId ? orchestratorFocusedTargetId : null
-    const scrollRatio = normalizeScrollRatio(explicitScrollRatio ?? middleScrollRatio())
+    const scrollTop = normalizeScrollTop(explicitScrollTop ?? middleScrollTop())
     const shouldSkip =
       !force &&
       lastSentOrchestratorViewIssueId === issueId &&
       lastSentOrchestratorViewTargetId === targetId &&
-      Math.abs(lastSentOrchestratorScrollRatio - scrollRatio) < 0.0025
+      Math.abs(lastSentOrchestratorScrollTop - scrollTop) < 2
 
     if (shouldSkip) {
       return
@@ -988,21 +996,21 @@
 
     lastSentOrchestratorViewIssueId = issueId
     lastSentOrchestratorViewTargetId = targetId
-    lastSentOrchestratorScrollRatio = scrollRatio
+    lastSentOrchestratorScrollTop = scrollTop
 
     send({
       type: 'set_orchestrator_view',
       issueId,
       targetId,
-      scrollRatio,
+      scrollTop,
     })
   }
 
   const flushOrchestratorScrollSync = (): void => {
     orchestratorScrollSyncTimer = undefined
-    const scrollRatio = pendingOrchestratorScrollRatio
-    pendingOrchestratorScrollRatio = null
-    syncOrchestratorViewState(false, scrollRatio === null ? undefined : scrollRatio)
+    const scrollTop = pendingOrchestratorScrollTop
+    pendingOrchestratorScrollTop = null
+    syncOrchestratorViewState(false, scrollTop === null ? undefined : scrollTop)
   }
 
   const queueOrchestratorScrollSync = (): void => {
@@ -1010,7 +1018,7 @@
       return
     }
 
-    pendingOrchestratorScrollRatio = middleScrollRatio()
+    pendingOrchestratorScrollTop = middleScrollTop()
     if (orchestratorScrollSyncTimer !== undefined) {
       return
     }
@@ -1468,7 +1476,8 @@
     orchestratorFocusedTargetId = null
     lastSentOrchestratorViewIssueId = null
     lastSentOrchestratorViewTargetId = null
-    lastSentOrchestratorScrollRatio = -1
+    lastSentOrchestratorScrollTop = -1
+    lastSentFollowState = null
     isConnecting = true
 
     const nextSocket = new WebSocket(socketUrl())
@@ -1513,6 +1522,7 @@
           followSuspensionReason = 'none'
           localSelectedIssueIdOverride = null
           clearFollowResumeTimer()
+          syncOrchestratorFollowState(false)
         } else {
           const hasNextTicketTransition = previousRoomState.revealed && !roomState.revealed
           if (hasNextTicketTransition && !isFollowingOrchestrator && followSuspensionReason === 'interaction') {
@@ -1533,6 +1543,8 @@
             localSelectedIssueIdOverride = null
           }
         }
+
+        syncOrchestratorFollowState(false)
 
         return
       }
@@ -1576,7 +1588,8 @@
       orchestratorFocusedTargetId = null
       lastSentOrchestratorViewIssueId = null
       lastSentOrchestratorViewTargetId = null
-      lastSentOrchestratorScrollRatio = -1
+      lastSentOrchestratorScrollTop = -1
+      lastSentFollowState = null
       roomState = createEmptyState()
       disposeAllIssueDocs()
       jiraIssues = null
@@ -2094,6 +2107,19 @@
                 {:else}
                   <span>{participant.name}</span>
                 {/if}
+
+                <span
+                  class="participant-follow-state"
+                  class:manual={roomState.orchestratorId !== null && !participant.isOrchestrator && !participant.isFollowingOrchestrator}
+                >
+                  {roomState.orchestratorId === null
+                    ? 'No orchestrator'
+                    : participant.isOrchestrator
+                      ? 'Orchestrator'
+                      : participant.isFollowingOrchestrator
+                        ? 'Following'
+                        : 'Not following'}
+                </span>
               </div>
 
               <div class="participant-controls">

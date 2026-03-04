@@ -22,6 +22,7 @@ type UserState = {
   name: string
   colorHue: number
   vote: EstimateOption | null
+  isFollowingOrchestrator: boolean
 }
 
 type SocketData = {
@@ -78,6 +79,7 @@ const maxSubtasksPerIssue = 100
 const maxIssueFieldsPerDraft = 256
 const issuePresenceTargetIdMaxLength = 120
 const issueCrdtUpdateMaxBytes = 1024 * 256
+const maxOrchestratorScrollTop = 2_000_000
 
 let revealed = false
 let selectedIssueId: string | null = null
@@ -85,7 +87,7 @@ let orchestratorId: string | null = null
 const createEmptyOrchestratorView = (): OrchestratorViewSnapshot => ({
   issueId: null,
   targetId: null,
-  scrollRatio: 0,
+  scrollTop: 0,
 })
 let orchestratorView: OrchestratorViewSnapshot = createEmptyOrchestratorView()
 
@@ -191,7 +193,7 @@ const normalizeIssuePresenceTargetId = (value: unknown): string => {
     .slice(0, issuePresenceTargetIdMaxLength)
 }
 
-const normalizeScrollRatio = (value: unknown): number => {
+const normalizeScrollTop = (value: unknown): number => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return 0
   }
@@ -200,11 +202,11 @@ const normalizeScrollRatio = (value: unknown): number => {
     return 0
   }
 
-  if (value > 1) {
-    return 1
+  if (value > maxOrchestratorScrollTop) {
+    return maxOrchestratorScrollTop
   }
 
-  return value
+  return Math.floor(value)
 }
 
 const canClientControlTicketFlow = (clientId: string): boolean => orchestratorId === null || orchestratorId === clientId
@@ -213,19 +215,19 @@ const resetOrchestratorView = (issueId: string | null = selectedIssueId): void =
   orchestratorView = {
     issueId,
     targetId: null,
-    scrollRatio: 0,
+    scrollTop: 0,
   }
 }
 
 const setOrchestratorView = (nextView: OrchestratorViewSnapshot): boolean => {
   const normalizedIssueId = nextView.issueId ? normalizeIssueId(nextView.issueId) : null
   const normalizedTargetId = nextView.targetId ? normalizeIssuePresenceTargetId(nextView.targetId) : null
-  const normalizedScrollRatio = normalizeScrollRatio(nextView.scrollRatio)
+  const normalizedScrollTop = normalizeScrollTop(nextView.scrollTop)
 
   const changed =
     orchestratorView.issueId !== normalizedIssueId ||
     orchestratorView.targetId !== normalizedTargetId ||
-    orchestratorView.scrollRatio !== normalizedScrollRatio
+    orchestratorView.scrollTop !== normalizedScrollTop
 
   if (!changed) {
     return false
@@ -234,7 +236,7 @@ const setOrchestratorView = (nextView: OrchestratorViewSnapshot): boolean => {
   orchestratorView = {
     issueId: normalizedIssueId,
     targetId: normalizedTargetId,
-    scrollRatio: normalizedScrollRatio,
+    scrollTop: normalizedScrollTop,
   }
 
   return true
@@ -1617,6 +1619,7 @@ const makeSnapshot = (clientId: string): RoomStateSnapshot => {
       name: user.name,
       colorHue: user.colorHue,
       isOrchestrator: orchestratorId === id,
+      isFollowingOrchestrator: orchestratorId === id ? true : user.isFollowingOrchestrator,
       hasVoted: user.vote !== null,
       vote: revealed ? user.vote : null,
     }))
@@ -1822,7 +1825,7 @@ const server = Bun.serve<SocketData>({
           if (existingUser) {
             existingUser.name = normalizedName
           } else {
-            users.set(clientId, { name: normalizedName, colorHue: pickDistinctHue(), vote: null })
+            users.set(clientId, { name: normalizedName, colorHue: pickDistinctHue(), vote: null, isFollowingOrchestrator: true })
             if (!orchestratorId && sharedJiraIssues) {
               orchestratorId = clientId
               resetOrchestratorView(selectedIssueId)
@@ -2148,12 +2151,28 @@ const server = Bun.serve<SocketData>({
           const changed = setOrchestratorView({
             issueId,
             targetId: issueId ? targetId : null,
-            scrollRatio: normalizeScrollRatio(event.scrollRatio),
+            scrollTop: normalizeScrollTop(event.scrollTop),
           })
           if (!changed) {
             return
           }
 
+          broadcastSnapshots()
+          return
+        }
+        case 'set_follow_orchestrator': {
+          const user = users.get(clientId)
+          if (!user) {
+            send(ws, { type: 'server_error', message: 'Join before updating follow mode.' })
+            return
+          }
+
+          const nextState = orchestratorId === clientId ? true : event.following === true
+          if (user.isFollowingOrchestrator === nextState) {
+            return
+          }
+
+          user.isFollowingOrchestrator = nextState
           broadcastSnapshots()
           return
         }
