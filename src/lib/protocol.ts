@@ -56,6 +56,8 @@ export type IssueEditorField = {
 
 export type IssueSubtask = {
   id: string
+  key: string
+  url: string | null
   title: string
   description: string
   done: boolean

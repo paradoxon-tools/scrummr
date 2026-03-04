@@ -37,11 +37,11 @@ bun run dev:server
 bun run dev
 ```
 
-The frontend runs on Vite's default port (`5173`) and connects to `ws://localhost:3001/ws`.
+The frontend runs on Vite's default port (`5173`) and connects to `ws://localhost:3101/ws`.
 
 ## Optional configuration
 
-- `WS_PORT` controls the Bun WebSocket server port (default `3001`).
+- `WS_PORT` controls the Bun WebSocket server port (default `3101`).
 - `VITE_WS_URL` overrides the client WebSocket URL.
 - `VITE_API_BASE_URL` overrides the base URL for backend HTTP calls (used by Jira integration).
 

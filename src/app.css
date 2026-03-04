@@ -433,15 +433,13 @@ input.busy {
 
 .subtasks {
   display: grid;
-  gap: 0.55rem;
+  gap: 0.35rem;
 }
 
 .subtasks-header {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
-  gap: 0.5rem;
 }
 
 .subtasks-header h3 {
@@ -449,14 +447,15 @@ input.busy {
 }
 
 .subtask-add {
+  margin-top: 0.35rem;
   display: flex;
-  flex-wrap: wrap;
   gap: 0.4rem;
   align-items: center;
 }
 
 .subtask-add input {
-  min-width: 220px;
+  flex: 1 1 auto;
+  min-width: 160px;
 }
 
 .subtask-list {
@@ -464,35 +463,65 @@ input.busy {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.6rem;
+  gap: 0;
 }
 
 .subtask-list li {
-  border: 1px solid #d2deef;
-  border-radius: 12px;
-  padding: 0.6rem;
-  background: #f8fbff;
-  display: grid;
-  gap: 0.42rem;
-}
-
-.subtask-row {
+  border-bottom: 1px solid #d2deef;
+  padding: 0.44rem 0.05rem;
   display: flex;
   justify-content: space-between;
-  gap: 0.55rem;
+  gap: 0.45rem;
   align-items: center;
 }
 
-.subtask-done-toggle {
+.subtask-list li:last-child {
+  border-bottom: 0;
+}
+
+.subtask-item-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.48rem;
+}
+
+.subtask-id {
+  color: #2f5b90;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.subtask-title {
+  color: #243b5d;
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtask-jira-link {
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 7px;
+  border: 1px solid #c4d5ec;
+  color: #40608c;
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.84rem;
-  color: #2f4566;
+  justify-content: center;
+  text-decoration: none;
+  background: #f3f8ff;
 }
 
-.subtask-done-toggle input {
-  margin: 0;
+.subtask-jira-link svg {
+  width: 0.78rem;
+  height: 0.78rem;
+}
+
+.subtask-jira-link.disabled {
+  opacity: 0.5;
 }
 
 .text-button.compact {

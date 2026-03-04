@@ -26,6 +26,7 @@
 
   const STORAGE_KEY = 'scrummer.display_name'
   const JIRA_STORAGE_KEY = 'scrummer.jira_config'
+  const DEFAULT_SERVER_PORT = '3101'
 
   const createEmptyIssueWorkspace = (): RoomStateSnapshot['issueWorkspace'] => ({
     selectedIssueId: null,
@@ -86,7 +87,7 @@
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${protocol}://${window.location.hostname}:3001/ws`
+    return `${protocol}://${window.location.hostname}:${DEFAULT_SERVER_PORT}/ws`
   }
 
   const apiBaseUrl = (): string => {
@@ -95,7 +96,7 @@
       return configuredUrl.replace(/\/$/, '')
     }
 
-    return `${window.location.protocol}//${window.location.hostname}:3001`
+    return `${window.location.protocol}//${window.location.hostname}:${DEFAULT_SERVER_PORT}`
   }
 
   const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
@@ -325,6 +326,101 @@
 
   const normalizeEditorFieldId = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 80)
 
+  const hiddenIssueFieldIds = new Set([
+    'summary',
+    'status',
+    'sprint',
+    'subtasks',
+    'priority',
+    'assignee',
+    'issue_type',
+    'issuetype',
+    'reporter',
+    'created',
+    'updated',
+    'status_category_changed',
+    'statuscategorychangedate',
+    'status_category',
+    'statuscategory',
+    'last_viewed',
+    'lastviewed',
+    'creator',
+    'progress',
+    'aggregate_progress',
+    'aggregateprogress',
+    'votes',
+    'log_work',
+    'worklog',
+    'project',
+    'parent',
+    'time_to_resolution',
+    'time_to_first_response',
+    'linked_issues',
+    'attachment',
+    'epic_link',
+    'work_ratio',
+    'workratio',
+    'watchers',
+    'development',
+    'dev_area',
+    'time_tracking',
+    'timetracking',
+    'rank',
+    'reply',
+    'comment',
+    'comments',
+  ])
+
+  const normalizeFieldLabelForMatch = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+  const hiddenIssueFieldLabels = new Set([
+    'summary',
+    'status',
+    'sprint',
+    'sub tasks',
+    'subtasks',
+    'priority',
+    'assignee',
+    'issue type',
+    'reporter',
+    'created',
+    'updated',
+    'status category changed',
+    'status category',
+    'last viewed',
+    'creator',
+    'progress',
+    'aggregate progress',
+    'votes',
+    'log work',
+    'project',
+    'parent',
+    'time to resolution',
+    'time to first response',
+    'linked issues',
+    'attachment',
+    'epic link',
+    'work ratio',
+    'watchers',
+    'development',
+    'dev area',
+    'time tracking',
+    'rank',
+    'reply',
+    'comment',
+    'comments',
+  ])
+
+  const isIssueFieldHidden = (field: IssueEditorField): boolean => {
+    const normalizedId = normalizeEditorFieldId(field.id)
+    if (hiddenIssueFieldIds.has(normalizedId)) {
+      return true
+    }
+
+    const normalizedLabel = normalizeFieldLabelForMatch(field.label)
+    return hiddenIssueFieldLabels.has(normalizedLabel)
+  }
+
   const normalizeEditorText = (value: string, maxLength = 16000): string => value.replace(/\r\n/g, '\n').slice(0, maxLength)
 
   const normalizePresenceTargetId = (value: string): string =>
@@ -379,6 +475,41 @@
     }
 
     return parsed.toLocaleString()
+  }
+
+  const resizeTextareaToContent = (node: HTMLTextAreaElement): void => {
+    node.style.height = '0px'
+    node.style.height = `${node.scrollHeight}px`
+  }
+
+  const autoSizeTextarea = (node: HTMLTextAreaElement, value: string) => {
+    node.style.resize = 'none'
+    node.style.overflowY = 'hidden'
+
+    const resize = (): void => {
+      resizeTextareaToContent(node)
+    }
+
+    const handleInput = (): void => {
+      resize()
+    }
+
+    void tick().then(resize)
+    node.addEventListener('input', handleInput)
+
+    return {
+      update(nextValue: string): void {
+        if (nextValue === value) {
+          return
+        }
+
+        value = nextValue
+        void tick().then(resize)
+      },
+      destroy(): void {
+        node.removeEventListener('input', handleInput)
+      },
+    }
   }
 
   const selectIssue = (issue: JiraIssue, group: JiraIssueGroup): void => {
@@ -960,6 +1091,7 @@
   $: selectedIssueFromJira = selectedIssueId && jiraIssues
     ? jiraIssues.groups.flatMap((group) => group.issues).find((issue) => issue.id === selectedIssueId) ?? null
     : null
+  $: visibleIssueFields = selectedIssueDraft ? selectedIssueDraft.fields.filter((field) => !isIssueFieldHidden(field)) : []
   $: selectedIssueGroup = selectedIssueId && jiraIssues
     ? jiraIssues.groups.find((group) => group.issues.some((issue) => issue.id === selectedIssueId)) ?? null
     : null
@@ -1050,7 +1182,6 @@
           <div class="issue-header">
             <div>
               <strong>{selectedIssueKey}</strong>
-              <p>{selectedIssueSummary}</p>
             </div>
             <div class="issue-header-actions">
               <button type="button" class="text-button compact" on:click={() => (isRawTicketDataOpen = !isRawTicketDataOpen)}>
@@ -1062,14 +1193,6 @@
             </div>
           </div>
 
-          <div class="issue-meta">
-            <span>{selectedIssueType}</span>
-            <span>Status: {selectedIssueStatus}</span>
-            <span>Priority: {selectedIssuePriority}</span>
-            <span>Assignee: {selectedIssueAssignee}</span>
-            <span>Reporter: {selectedIssueReporter}</span>
-          </div>
-
           {#if isRawTicketDataOpen}
             <section class="raw-ticket-data">
               <h3>Raw ticket data</h3>
@@ -1079,7 +1202,7 @@
 
           {#if selectedIssueDraft}
             <div class="issue-fields">
-              {#each selectedIssueDraft.fields as field (field.id)}
+              {#each visibleIssueFields as field (field.id)}
                 {@const fieldPresenceTarget = fieldPresenceTargetId(field.id)}
                 {@const fieldPresenceLabel = getPresenceLabelForTarget(fieldPresenceTarget)}
                 <div class="issue-field" class:busy={isTargetEditedByOthers(fieldPresenceTarget)}>
@@ -1091,6 +1214,7 @@
                     id={`issue-field-${field.id}`}
                     rows={field.id === 'description' ? 6 : 3}
                     value={field.value}
+                    use:autoSizeTextarea={field.value}
                     on:focus={() => setIssuePresence(fieldPresenceTarget, true)}
                     on:blur={() => setIssuePresence(fieldPresenceTarget, false)}
                     on:input={(event) => setIssueField(field, (event.currentTarget as HTMLTextAreaElement).value)}
@@ -1105,91 +1229,75 @@
           <section class="subtasks">
             <div class="subtasks-header">
               <h3>Subtasks</h3>
-              <div class="subtask-add">
-                <input
-                  value={newSubtaskTitle}
-                  placeholder="Add subtask title"
-                  on:input={(event) => (newSubtaskTitle = (event.currentTarget as HTMLInputElement).value)}
-                  on:keydown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault()
-                      addIssueSubtask()
-                    }
-                  }}
-                />
-                <button type="button" class="secondary" on:click={addIssueSubtask}>Add</button>
-              </div>
             </div>
 
             {#if selectedIssueDraft && selectedIssueDraft.subtasks.length > 0}
               <ul class="subtask-list">
                 {#each selectedIssueDraft.subtasks as subtask (subtask.id)}
-                  {@const subtaskTitlePresenceTarget = subtaskPresenceTargetId(subtask.id, 'title')}
-                  {@const subtaskDescriptionPresenceTarget = subtaskPresenceTargetId(subtask.id, 'description')}
-                  {@const subtaskTitlePresenceLabel = getPresenceLabelForTarget(subtaskTitlePresenceTarget)}
-                  {@const subtaskDescriptionPresenceLabel = getPresenceLabelForTarget(subtaskDescriptionPresenceTarget)}
+                  {@const subtaskIdentifier = subtask.key || subtask.id}
                   <li>
-                    <div class="subtask-row">
-                      <label class="subtask-done-toggle">
-                        <input
-                          type="checkbox"
-                          checked={subtask.done}
-                          on:change={(event) =>
-                            toggleIssueSubtaskDone(subtask, (event.currentTarget as HTMLInputElement).checked)}
-                        />
-                        Done
-                      </label>
-                      <button type="button" class="text-button compact" on:click={() => removeIssueSubtask(subtask)}>
-                        Remove
-                      </button>
+                    <div class="subtask-item-main">
+                      <span class="subtask-id">{subtaskIdentifier}</span>
+                      <span class="subtask-title">{subtask.title}</span>
                     </div>
 
-                    <input
-                      class:busy={isTargetEditedByOthers(subtaskTitlePresenceTarget)}
-                      value={subtask.title}
-                      placeholder="Subtask title"
-                      on:focus={() => setIssuePresence(subtaskTitlePresenceTarget, true)}
-                      on:blur={() => setIssuePresence(subtaskTitlePresenceTarget, false)}
-                      on:input={(event) => updateIssueSubtaskTitle(subtask, (event.currentTarget as HTMLInputElement).value)}
-                    />
-                    {#if subtaskTitlePresenceLabel}
-                      <p class="presence-indicator subtask" class:others={isTargetEditedByOthers(subtaskTitlePresenceTarget)}>
-                        {subtaskTitlePresenceLabel}
-                      </p>
-                    {/if}
-
-                    <textarea
-                      class:busy={isTargetEditedByOthers(subtaskDescriptionPresenceTarget)}
-                      rows="3"
-                      value={subtask.description}
-                      placeholder="Subtask description"
-                      on:focus={() => setIssuePresence(subtaskDescriptionPresenceTarget, true)}
-                      on:blur={() => setIssuePresence(subtaskDescriptionPresenceTarget, false)}
-                      on:input={(event) =>
-                        updateIssueSubtaskDescription(subtask, (event.currentTarget as HTMLTextAreaElement).value)}
-                    ></textarea>
-                    {#if subtaskDescriptionPresenceLabel}
-                      <p class="presence-indicator subtask" class:others={isTargetEditedByOthers(subtaskDescriptionPresenceTarget)}>
-                        {subtaskDescriptionPresenceLabel}
-                      </p>
+                    {#if subtask.url}
+                      <a
+                        class="subtask-jira-link"
+                        href={subtask.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={`Open ${subtaskIdentifier} in Jira`}
+                        title="Open in Jira"
+                      >
+                        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                          <path
+                            d="M6 3h7v7M13 3L7 9M10 13H3V6"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          ></path>
+                        </svg>
+                      </a>
+                    {:else}
+                      <span class="subtask-jira-link disabled" aria-hidden="true">
+                        <svg viewBox="0 0 16 16" focusable="false">
+                          <path
+                            d="M6 3h7v7M13 3L7 9M10 13H3V6"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          ></path>
+                        </svg>
+                      </span>
                     {/if}
                   </li>
                 {/each}
               </ul>
             {:else}
-              <p class="jira-empty">No subtasks yet. Add one to break the work down.</p>
+              <p class="jira-empty">No subtasks yet.</p>
             {/if}
+
+            <div class="subtask-add">
+              <input
+                value={newSubtaskTitle}
+                placeholder="Add subtask title"
+                on:input={(event) => (newSubtaskTitle = (event.currentTarget as HTMLInputElement).value)}
+                on:keydown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    addIssueSubtask()
+                  }
+                }}
+              />
+              <button type="button" class="secondary" on:click={addIssueSubtask}>Add</button>
+            </div>
           </section>
 
-          {#if selectedIssueUpdatedAt}
-            <p class="issue-update-meta">
-              Last update {selectedIssueUpdatedAt}
-              {#if selectedIssueUpdatedBy}
-                {' by ' + selectedIssueUpdatedBy}
-              {/if}
-              .
-            </p>
-          {/if}
         {:else}
           <div class="ticket-placeholder">
             <h3>No ticket selected</h3>

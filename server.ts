@@ -5,6 +5,7 @@ import {
   type IssueDraftSnapshot,
   type IssueEditorField,
   type IssuePresenceSnapshot,
+  type IssueSubtask,
   type JiraIssue,
   type JiraIssueField,
   type JiraIssueGroup,
@@ -26,9 +27,17 @@ type SocketData = {
 
 type JiraIssueWithSprint = JiraIssue & {
   sprint: JiraSprint | null
+  subtasks: IssueSubtask[]
 }
 
-const port = Number(Bun.env.WS_PORT ?? 3001)
+type JiraIssueFetchResult = {
+  jiraIssues: JiraIssueResult
+  subtasksByIssueId: Map<string, IssueSubtask[]>
+}
+
+const defaultServerPort = 3101
+const hostname = Bun.env.WS_HOST?.trim() || '0.0.0.0'
+const port = Number(Bun.env.WS_PORT ?? defaultServerPort)
 const allowedVotes = new Set<string>(ESTIMATE_OPTIONS)
 const users = new Map<string, UserState>()
 const sockets = new Map<string, Bun.ServerWebSocket<SocketData>>()
@@ -63,6 +72,7 @@ let selectedIssueId: string | null = null
 const issueDrafts = new Map<string, IssueDraftSnapshot>()
 const issuePresenceByIssue = new Map<string, Map<string, Set<string>>>()
 let sharedJiraIssues: JiraIssueResult | null = null
+let jiraSubtasksByIssueId = new Map<string, IssueSubtask[]>()
 const estimatedIssueIds = new Set<string>()
 
 const hueDistance = (a: number, b: number): number => {
@@ -534,6 +544,7 @@ const ensureIssueDraft = (
   issueUrl: string,
   seedFields: IssueEditorField[],
   updatedBy: string | null,
+  seedSubtasks: IssueSubtask[] = [],
 ): IssueDraftSnapshot => {
   const existing = issueDrafts.get(issueId)
   if (existing) {
@@ -560,6 +571,22 @@ const ensureIssueDraft = (
       }
     }
 
+    if (seedSubtasks.length > 0) {
+      const existingSubtaskIds = new Set(existing.subtasks.map((subtask) => subtask.id))
+      for (const seedSubtask of seedSubtasks) {
+        if (existing.subtasks.length >= maxSubtasksPerIssue) {
+          break
+        }
+
+        if (existingSubtaskIds.has(seedSubtask.id)) {
+          continue
+        }
+
+        existing.subtasks.push({ ...seedSubtask })
+        existingSubtaskIds.add(seedSubtask.id)
+      }
+    }
+
     touchIssueDraft(existing, updatedBy)
     return existing
   }
@@ -570,7 +597,7 @@ const ensureIssueDraft = (
     issueKey,
     issueUrl,
     fields,
-    subtasks: [],
+    subtasks: seedSubtasks.slice(0, maxSubtasksPerIssue).map((subtask) => ({ ...subtask })),
     updatedBy,
     updatedAt: new Date().toISOString(),
   }
@@ -718,6 +745,62 @@ const normalizeSubtaskTitle = (value: unknown): string => normalizeIssueText(val
 
 const normalizeSubtaskDescription = (value: unknown): string => normalizeIssueText(value, subtaskDescriptionMaxLength)
 
+const normalizeJiraSubtaskStatusCategory = (value: unknown): string => {
+  if (!isRecord(value)) {
+    return ''
+  }
+
+  if (typeof value.key === 'string' && value.key.trim()) {
+    return normalizeComparableText(value.key)
+  }
+
+  if (typeof value.name === 'string' && value.name.trim()) {
+    return normalizeComparableText(value.name)
+  }
+
+  return ''
+}
+
+const parseJiraSubtasks = (jiraOrigin: string, value: unknown): IssueSubtask[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const subtasksById = new Map<string, IssueSubtask>()
+  for (const candidate of value) {
+    if (!isRecord(candidate)) {
+      continue
+    }
+
+    const subtaskId = normalizeIssueId(candidate.id)
+    if (!subtaskId || subtasksById.has(subtaskId)) {
+      continue
+    }
+
+    const fields = isRecord(candidate.fields) ? candidate.fields : {}
+    const subtaskKey = typeof candidate.key === 'string' ? candidate.key.trim() : ''
+    const fallbackTitle = typeof candidate.key === 'string' && candidate.key.trim() ? candidate.key.trim() : 'Subtask'
+    const title = normalizeSubtaskTitle(fields.summary ?? fallbackTitle)
+    if (!title) {
+      continue
+    }
+
+    const statusField = isRecord(fields.status) ? fields.status : {}
+    const statusCategory = normalizeJiraSubtaskStatusCategory(statusField.statusCategory)
+
+    subtasksById.set(subtaskId, {
+      id: subtaskId,
+      key: subtaskKey,
+      url: subtaskKey ? `${jiraOrigin}/browse/${encodeURIComponent(subtaskKey)}` : null,
+      title,
+      description: normalizeSubtaskDescription(toJiraDescriptionText(fields.description)),
+      done: statusCategory === 'done',
+    })
+  }
+
+  return [...subtasksById.values()].slice(0, maxSubtasksPerIssue)
+}
+
 const mapJiraIssues = (
   jiraOrigin: string,
   payload: unknown,
@@ -767,6 +850,7 @@ const mapJiraIssues = (
         isEstimated: false,
         fields: buildJiraEditorFields(fields, fieldNamesById, normalizedStatus),
         sprint: parseIssueSprint(sprintField, preferredSprintState),
+        subtasks: parseJiraSubtasks(jiraOrigin, fields.subtasks),
       }
     })
 }
@@ -918,6 +1002,7 @@ const ensureSelectedIssueFromShared = (issueId: string, updatedBy: string | null
     normalizeIssueUrl(entry.issue.url),
     buildWorkspaceSeedFields(entry.issue, entry.group),
     updatedBy,
+    jiraSubtasksByIssueId.get(normalizedIssueId) ?? [],
   )
   selectedIssueId = normalizedIssueId
   return true
@@ -1119,7 +1204,7 @@ const fetchAllSearchIssues = async (
   return issues
 }
 
-const fetchJiraIssues = async (request: Request): Promise<JiraIssueResult | Response> => {
+const fetchJiraIssues = async (request: Request): Promise<JiraIssueFetchResult | Response> => {
   let body: unknown
   try {
     body = await request.json()
@@ -1219,9 +1304,35 @@ const fetchJiraIssues = async (request: Request): Promise<JiraIssueResult | Resp
     groups,
   }
 
+  const subtasksByIssueId = new Map<string, IssueSubtask[]>()
+  const registerIssueSubtasks = (issue: JiraIssueWithSprint): void => {
+    const issueId = normalizeIssueId(issue.id)
+    if (!issueId) {
+      return
+    }
+
+    subtasksByIssueId.set(
+      issueId,
+      issue.subtasks.slice(0, maxSubtasksPerIssue).map((subtask) => ({ ...subtask })),
+    )
+  }
+
+  for (const issue of filteredCurrentIssues) {
+    registerIssueSubtasks(issue)
+  }
+  for (const issue of filteredNextIssues) {
+    registerIssueSubtasks(issue)
+  }
+  for (const issue of filteredBacklogIssues) {
+    registerIssueSubtasks(issue)
+  }
+
   applyEstimatedFlags(response)
 
-  return response
+  return {
+    jiraIssues: response,
+    subtasksByIssueId,
+  }
 }
 
 const parseClientEvent = (rawMessage: string | Uint8Array | ArrayBuffer): ClientEvent | null => {
@@ -1307,6 +1418,7 @@ const setVote = (clientId: string, vote: EstimateOption | null): boolean => {
 }
 
 const server = Bun.serve<SocketData>({
+  hostname,
   port,
   async fetch(request, serverInstance) {
     const requestUrl = new URL(request.url)
@@ -1320,17 +1432,18 @@ const server = Bun.serve<SocketData>({
         return jsonResponse(405, { message: 'Method not allowed.' })
       }
 
-      const jiraIssues = await fetchJiraIssues(request)
-      if (jiraIssues instanceof Response) {
-        return jiraIssues
+      const jiraIssueFetchResult = await fetchJiraIssues(request)
+      if (jiraIssueFetchResult instanceof Response) {
+        return jiraIssueFetchResult
       }
 
-      sharedJiraIssues = jiraIssues
+      sharedJiraIssues = jiraIssueFetchResult.jiraIssues
+      jiraSubtasksByIssueId = jiraIssueFetchResult.subtasksByIssueId
       if (!selectedIssueId || !ensureSelectedIssueFromShared(selectedIssueId, null)) {
         selectFirstSharedIssue()
       }
       broadcastSnapshots()
-      return jsonResponse(200, jiraIssues)
+      return jsonResponse(200, jiraIssueFetchResult.jiraIssues)
     }
 
     if (requestUrl.pathname === '/ws') {
@@ -1427,7 +1540,7 @@ const server = Bun.serve<SocketData>({
           }
 
           const fields = normalizeIssueEditorFields(event.fields)
-          ensureIssueDraft(issueId, issueKey, issueUrl, fields, clientId)
+          ensureIssueDraft(issueId, issueKey, issueUrl, fields, clientId, jiraSubtasksByIssueId.get(issueId) ?? [])
           selectedIssueId = issueId
           broadcastSnapshots()
           return
@@ -1448,7 +1561,14 @@ const server = Bun.serve<SocketData>({
             return
           }
 
-          const draft = ensureIssueDraft(issueId, issueKey, issueUrl, [field], clientId)
+          const draft = ensureIssueDraft(
+            issueId,
+            issueKey,
+            issueUrl,
+            [field],
+            clientId,
+            jiraSubtasksByIssueId.get(issueId) ?? [],
+          )
           const existingField = draft.fields.find((entry) => entry.id === field.id)
           if (existingField) {
             existingField.label = field.label
@@ -1478,7 +1598,7 @@ const server = Bun.serve<SocketData>({
             return
           }
 
-          const draft = ensureIssueDraft(issueId, issueKey, issueUrl, [], clientId)
+          const draft = ensureIssueDraft(issueId, issueKey, issueUrl, [], clientId, jiraSubtasksByIssueId.get(issueId) ?? [])
           if (draft.subtasks.length >= maxSubtasksPerIssue) {
             send(ws, { type: 'server_error', message: 'This ticket already has the maximum number of subtasks.' })
             return
@@ -1486,6 +1606,8 @@ const server = Bun.serve<SocketData>({
 
           draft.subtasks.push({
             id: crypto.randomUUID(),
+            key: '',
+            url: null,
             title,
             description: '',
             done: false,
@@ -1639,6 +1761,7 @@ const server = Bun.serve<SocketData>({
         issueDrafts.clear()
         issuePresenceByIssue.clear()
         sharedJiraIssues = null
+        jiraSubtasksByIssueId.clear()
         estimatedIssueIds.clear()
       }
 
@@ -1647,4 +1770,4 @@ const server = Bun.serve<SocketData>({
   },
 })
 
-console.log(`Scrummer WebSocket server listening on ws://localhost:${server.port}/ws`)
+console.log(`Scrummer WebSocket server listening on ws://${hostname}:${server.port}/ws`)
