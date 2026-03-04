@@ -137,6 +137,7 @@ export type ParticipantView = {
   id: string
   name: string
   colorHue: number
+  isOrchestrator: boolean
   hasVoted: boolean
   vote: EstimateOption | null
 }
@@ -145,6 +146,7 @@ export type RoomStateSnapshot = {
   revealed: boolean
   myId: string
   myVote: EstimateOption | null
+  orchestratorId: string | null
   participants: ParticipantView[]
   issueWorkspace: IssueWorkspaceSnapshot
   jiraIssues: JiraIssueResult | null

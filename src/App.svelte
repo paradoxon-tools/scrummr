@@ -38,6 +38,7 @@
     revealed: false,
     myId: '',
     myVote: null,
+    orchestratorId: null,
     participants: [],
     issueWorkspace: createEmptyIssueWorkspace(),
     jiraIssues: null,
@@ -79,6 +80,7 @@
   let participantNameInputElement: HTMLInputElement | null = null
   let isRawTicketDataOpen = false
   let rawTicketDataIssueId: string | null = null
+  let shouldAutoLoadJiraAfterConnect = false
 
   const socketUrl = (): string => {
     const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim()
@@ -787,11 +789,16 @@
     jiraMessage = ''
 
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (roomState.myId) {
+        headers['X-Scrummer-Participant-Id'] = roomState.myId
+      }
+
       const response = await fetch(`${apiBaseUrl()}/api/jira/issues`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify(normalized),
       })
 
@@ -1064,7 +1071,7 @@
     }
 
     if (hasStoredJiraConnection) {
-      void loadJiraIssues()
+      shouldAutoLoadJiraAfterConnect = true
     }
   })
 
@@ -1076,6 +1083,15 @@
 
   $: votedCount = roomState.participants.filter((participant) => participant.hasVoted).length
   $: totalCount = roomState.participants.length
+  $: participantsForDisplay = [...roomState.participants].sort((a, b) => {
+    const aIsOrchestrator = a.id === roomState.orchestratorId
+    const bIsOrchestrator = b.id === roomState.orchestratorId
+    if (aIsOrchestrator !== bIsOrchestrator) {
+      return aIsOrchestrator ? -1 : 1
+    }
+
+    return a.name.localeCompare(b.name)
+  })
   $: canReveal = votedCount > 0
   $: revealBuckets = ESTIMATE_OPTIONS.map((estimate) => ({
     estimate,
@@ -1127,6 +1143,10 @@
   $: if (loadedJiraTicketCount === 0) {
     isJiraConfigCollapsed = false
     hasAutoCollapsedJiraConfig = false
+  }
+  $: if (shouldAutoLoadJiraAfterConnect && isConnected && roomState.myId && !isJiraLoading) {
+    shouldAutoLoadJiraAfterConnect = false
+    void loadJiraIssues()
   }
   $: selectedIssueKey = selectedIssueDraft?.issueKey || selectedIssueFromJira?.key || ''
   $: selectedIssueUrl = selectedIssueDraft?.issueUrl || selectedIssueFromJira?.url || ''
@@ -1318,17 +1338,34 @@
       <section class="participants">
         <h2>Participants</h2>
         <ul>
-          {#each roomState.participants as participant}
+          {#each participantsForDisplay as participant}
             <li class:me={participant.id === roomState.myId} style={`--user-hue: ${participant.colorHue};`}>
               <div class="person">
+                <span class="participant-color" class:orchestrator={participant.id === roomState.orchestratorId}>
+                  {#if participant.id === roomState.myId}
+                    <button
+                      type="button"
+                      class="color-swatch mini"
+                      aria-label="Get a new participant color"
+                      title="Get a new color"
+                      on:click={requestNewColor}
+                    ></button>
+                  {:else}
+                    <span class="avatar-dot" aria-hidden="true"></span>
+                  {/if}
+                  {#if participant.id === roomState.orchestratorId}
+                    <span class="orchestrator-crown" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" focusable="false">
+                        <path
+                          d="M2 12h12l-1-6-3 3-2-4-2 4-3-3z"
+                          fill="currentColor"
+                        ></path>
+                      </svg>
+                    </span>
+                  {/if}
+                </span>
+
                 {#if participant.id === roomState.myId}
-                  <button
-                    type="button"
-                    class="color-swatch mini"
-                    aria-label="Get a new participant color"
-                    title="Get a new color"
-                    on:click={requestNewColor}
-                  ></button>
                   {#if isProfileEditing}
                     <input
                       bind:this={participantNameInputElement}
@@ -1345,7 +1382,6 @@
                     <span>{participant.name}</span>
                   {/if}
                 {:else}
-                  <span class="avatar-dot" aria-hidden="true"></span>
                   <span>{participant.name}</span>
                 {/if}
               </div>

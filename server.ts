@@ -53,13 +53,14 @@ const jiraCoreFieldOrder = ['summary', 'description', 'status', 'priority', 'ass
 const jiraCorsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Scrummer-Participant-Id',
 }
 const issueFieldMaxLength = 16000
 const issueFieldLabelMaxLength = 80
 const issueFieldIdMaxLength = 80
 const issueKeyMaxLength = 40
 const issueUrlMaxLength = 600
+const participantIdMaxLength = 80
 const subtaskTitleMaxLength = 240
 const subtaskDescriptionMaxLength = 16000
 const maxSubtasksPerIssue = 100
@@ -68,6 +69,7 @@ const issuePresenceTargetIdMaxLength = 120
 
 let revealed = false
 let selectedIssueId: string | null = null
+let orchestratorId: string | null = null
 
 const issueDrafts = new Map<string, IssueDraftSnapshot>()
 const issuePresenceByIssue = new Map<string, Map<string, Set<string>>>()
@@ -121,6 +123,19 @@ const pickDistinctHue = (excludeUserId?: string, avoidHue?: number): number => {
 }
 
 const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
+
+const normalizeParticipantId = (value: unknown): string => {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  const normalized = value.trim().slice(0, participantIdMaxLength)
+  if (!/^[a-z0-9-]+$/i.test(normalized)) {
+    return ''
+  }
+
+  return normalized
+}
 
 const normalizeIssueId = (value: unknown): string =>
   typeof value === 'string' ? value.trim().slice(0, issueFieldIdMaxLength) : ''
@@ -1358,15 +1373,23 @@ const makeSnapshot = (clientId: string): RoomStateSnapshot => {
       id,
       name: user.name,
       colorHue: user.colorHue,
+      isOrchestrator: orchestratorId === id,
       hasVoted: user.vote !== null,
       vote: revealed ? user.vote : null,
     }))
-    .sort((a, b) => a.name.localeCompare(b.name))
+    .sort((a, b) => {
+      if (a.isOrchestrator !== b.isOrchestrator) {
+        return a.isOrchestrator ? -1 : 1
+      }
+
+      return a.name.localeCompare(b.name)
+    })
 
   return {
     revealed,
     myId: clientId,
     myVote: users.get(clientId)?.vote ?? null,
+    orchestratorId,
     participants,
     issueWorkspace: toWorkspaceSnapshot(),
     jiraIssues: sharedJiraIssues ? cloneJiraIssueResult(sharedJiraIssues) : null,
@@ -1432,6 +1455,8 @@ const server = Bun.serve<SocketData>({
         return jsonResponse(405, { message: 'Method not allowed.' })
       }
 
+      const requesterId = normalizeParticipantId(request.headers.get('x-scrummer-participant-id'))
+
       const jiraIssueFetchResult = await fetchJiraIssues(request)
       if (jiraIssueFetchResult instanceof Response) {
         return jiraIssueFetchResult
@@ -1439,6 +1464,12 @@ const server = Bun.serve<SocketData>({
 
       sharedJiraIssues = jiraIssueFetchResult.jiraIssues
       jiraSubtasksByIssueId = jiraIssueFetchResult.subtasksByIssueId
+      if (requesterId && users.has(requesterId)) {
+        orchestratorId = requesterId
+      } else if (!orchestratorId && users.size === 1) {
+        const [firstConnectedUserId] = users.keys()
+        orchestratorId = firstConnectedUserId ?? null
+      }
       if (!selectedIssueId || !ensureSelectedIssueFromShared(selectedIssueId, null)) {
         selectFirstSharedIssue()
       }
@@ -1482,6 +1513,9 @@ const server = Bun.serve<SocketData>({
             existingUser.name = normalizedName
           } else {
             users.set(clientId, { name: normalizedName, colorHue: pickDistinctHue(), vote: null })
+            if (!orchestratorId && sharedJiraIssues) {
+              orchestratorId = clientId
+            }
           }
 
           broadcastSnapshots()
@@ -1753,11 +1787,15 @@ const server = Bun.serve<SocketData>({
     close(ws) {
       sockets.delete(ws.data.id)
       users.delete(ws.data.id)
+      if (orchestratorId === ws.data.id) {
+        orchestratorId = null
+      }
       clearClientIssuePresence(ws.data.id)
 
       if (users.size === 0) {
         revealed = false
         selectedIssueId = null
+        orchestratorId = null
         issueDrafts.clear()
         issuePresenceByIssue.clear()
         sharedJiraIssues = null
