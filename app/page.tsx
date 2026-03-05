@@ -1,8 +1,10 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import Link from 'next/link'
+import { Link } from '@tanstack/react-router'
+import { useAction } from 'convex/react'
 import * as Y from 'yjs'
+import { api } from '../convex/_generated/api.js'
 import CodeMirrorField from '../components/CodeMirrorField'
 import { Badge } from '../components/ui/badge'
 import { Button, buttonVariants } from '../components/ui/button'
@@ -432,6 +434,9 @@ const decodeBinaryPayload = (value: string): Uint8Array | null => {
 }
 
 export default function HomePage() {
+  const loadJiraIssuesAction = useAction(api.jira.loadIssues)
+  const syncIssueFieldAction = useAction(api.jira.syncIssueField)
+
   const [roomState, setRoomState] = useState<RoomStateSnapshot>(createEmptyState)
   const roomStateRef = useRef(roomState)
 
@@ -521,17 +526,6 @@ export default function HomePage() {
   useEffect(() => {
     jiraConfigRef.current = jiraConfig
   }, [jiraConfig])
-
-  const apiBaseUrl = (): string => {
-    const configured =
-      process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ||
-      process.env.NEXT_PUBLIC_VITE_API_BASE_URL?.trim() ||
-      process.env.VITE_API_BASE_URL?.trim()
-    if (configured) {
-      return configured.replace(/\/$/, '')
-    }
-    return window.location.origin
-  }
 
   const send = (event: ClientEvent): void => {
     const socket = socketRef.current
@@ -969,25 +963,17 @@ export default function HomePage() {
     jiraFieldLastRequestedValueRef.current.set(syncKey, normalizedValue)
 
     try {
-      const response = await fetch(`${apiBaseUrl()}/api/jira/issues/sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          baseUrl: config.baseUrl.trim(),
-          email: config.email.trim(),
-          apiToken: config.apiToken.trim(),
-          issueKey,
-          fieldId,
-          value: normalizedValue,
-        }),
+      const result = await syncIssueFieldAction({
+        baseUrl: config.baseUrl.trim(),
+        email: config.email.trim(),
+        apiToken: config.apiToken.trim(),
+        issueKey,
+        fieldId,
+        value: normalizedValue,
       })
 
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as unknown
-        const message = isRecord(payload) && typeof payload.message === 'string' ? payload.message : 'Failed to sync Jira field.'
-        setJiraError(message)
+      if (!result.ok) {
+        setJiraError(result.message || 'Failed to sync Jira field.')
         return
       }
 
@@ -1198,42 +1184,35 @@ export default function HomePage() {
     setJiraMessage('')
 
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (roomStateRef.current.myId) {
-        headers['X-Scrummer-Participant-Id'] = roomStateRef.current.myId
-      }
-
-      const response = await fetch(`${apiBaseUrl()}/api/jira/issues`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(normalized),
+      const result = await loadJiraIssuesAction({
+        baseUrl: normalized.baseUrl,
+        email: normalized.email,
+        apiToken: normalized.apiToken,
+        ticketPrefix: normalized.ticketPrefix,
+        participantId: roomStateRef.current.myId || undefined,
       })
-
-      const payload = (await response.json().catch(() => null)) as unknown
       if (requestId !== jiraRequestCounterRef.current) {
         return
       }
 
-      if (!response.ok) {
-        const message = isRecord(payload) && typeof payload.message === 'string' ? payload.message : 'Failed to load Jira tickets.'
-        setJiraError(message)
+      if (!result.ok) {
+        setJiraError(result.message || 'Failed to load Jira tickets.')
         setJiraMessage('')
         return
       }
 
-      const result = parseJiraIssueResult(payload)
-      if (!result) {
-        setJiraError('Received an unexpected Jira response.')
+      if (!result.jiraIssues) {
+        setJiraError('Jira issues were not returned by the backend.')
         setJiraMessage('')
         return
       }
 
-      setJiraIssues(result)
-      const total = result.groups.reduce((count, group) => count + group.issues.length, 0)
+      setJiraIssues(result.jiraIssues)
+      const total = result.jiraIssues.groups.reduce((count: number, group: JiraIssueGroup) => count + group.issues.length, 0)
       setJiraError('')
       setJiraMessage(
         total > 0
-          ? `Loaded ${total} tickets grouped into ${result.groups.length} sprint buckets.`
+          ? `Loaded ${total} tickets grouped into ${result.jiraIssues.groups.length} sprint buckets.`
           : 'No Jira tickets found for current/future sprints or backlog.',
       )
     } catch {
@@ -1303,7 +1282,7 @@ export default function HomePage() {
     if (!nextSocket) {
       isConnectingRef.current = false
       setIsConnecting(false)
-      setConnectionMessage('Set NEXT_PUBLIC_CONVEX_URL to connect to the shared room backend.')
+      setConnectionMessage('Set VITE_CONVEX_URL to connect to the shared room backend.')
       return
     }
 
@@ -2022,7 +2001,7 @@ export default function HomePage() {
             </Button>
           </form>
           <p className="jira-config-note">
-            Facilitator? Open the <Link href="/dashboard">dashboard</Link> to connect Jira and start the session.
+            Facilitator? Open the <Link to="/dashboard">dashboard</Link> to connect Jira and start the session.
           </p>
         </Card>
       ) : (
@@ -2433,7 +2412,7 @@ export default function HomePage() {
             <div className="panel-heading">
               <h2>Jira Tickets</h2>
               <div className="jira-panel-actions">
-                <Link href="/dashboard" className={buttonVariants({ variant: 'secondary' })}>
+                <Link to="/dashboard" className={buttonVariants({ variant: 'secondary' })}>
                   Open dashboard
                 </Link>
               </div>

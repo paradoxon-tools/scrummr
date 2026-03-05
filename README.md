@@ -1,6 +1,6 @@
 # Scrummer v1
 
-Single-room scrum planning poker app built with Next.js + Convex.
+Single-room scrum planning poker app built with TanStack Start + Convex.
 
 ## Features
 
@@ -19,42 +19,47 @@ Single-room scrum planning poker app built with Next.js + Convex.
 Install dependencies:
 
 ```bash
-npm install
+bun install
 ```
 
-Set your Convex deployment URL:
+Set your environment variables:
 
 ```bash
 # .env.local
-NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
+VITE_CONVEX_URL=https://<your-deployment>.convex.cloud
+VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
+CLERK_JWT_ISSUER_DOMAIN=https://<your-clerk-domain>
 ```
 
 Run frontend + Convex together:
 
 ```bash
-npm run dev:all
+bun run dev
 ```
 
 Or run them separately:
 
 ```bash
-npm run dev:convex
+bun run dev:convex
 ```
 
 ```bash
-npm run dev
+bun run dev:web
 ```
 
 The frontend runs on `http://localhost:5173`.
 
 ## Optional configuration
 
-- `NEXT_PUBLIC_CONVEX_URL` points the app to your Convex deployment.
-- `NEXT_PUBLIC_API_BASE_URL` overrides the base URL for backend HTTP calls (used by Jira integration).
+- `VITE_CONVEX_URL` points the app to your Convex deployment.
+- `VITE_CLERK_PUBLISHABLE_KEY` is required for Clerk in the frontend.
+- `CLERK_SECRET_KEY` is required for Clerk server operations.
+- `CLERK_JWT_ISSUER_DOMAIN` is required by Convex auth config.
 
 ## Deploy to Vercel with Convex
 
-This repo includes a `build:vercel` script that deploys Convex first, then builds Next.js:
+This repo includes a `build:vercel` script that deploys Convex first, then builds the TanStack Start app:
 
 ```bash
 bun run build:vercel
@@ -78,12 +83,12 @@ Required Vercel environment variable:
 
 Notes:
 
-- `NEXT_PUBLIC_CONVEX_URL` is injected during the build by `convex deploy --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL`.
-- You do not need to manually set `NEXT_PUBLIC_CONVEX_URL` in Vercel when using this build flow.
+- `VITE_CONVEX_URL` is injected during the build by `convex deploy --cmd-url-env-var-name VITE_CONVEX_URL`.
+- You do not need to manually set `VITE_CONVEX_URL` in Vercel when using this build flow.
 
 ## Jira integration notes
 
-- Scrummer calls Jira through the Next.js route at `POST /api/jira/issues`.
+- Scrummer loads/syncs Jira through Convex actions (`convex/jira.ts`).
 - The Jira request uses the ticket prefix (project key, for example `TEAM`) to load tickets, then groups them by sprint so each current/future sprint appears as its own bucket.
 - Successful Jira loads are stored in Convex room state so late joiners and other participants share the same ticket buckets.
 - Ticket editor changes stay local to the room state and are broadcast to all connected users (no write-back to Jira yet).

@@ -1,4 +1,60 @@
-import { mutation, query } from './_generated/server'
+import { mutation, query } from "./_generated/server";
+import { v } from "convex/values";
+import type {
+  ClientEvent,
+  EstimateOption,
+  IssueDraftSnapshot,
+  IssueEditorField,
+  IssuePresenceSnapshot,
+  IssueSubtask,
+  JiraIssue,
+  JiraIssueGroup,
+  JiraIssueResult,
+  OrchestratorViewSnapshot,
+  RoomStateSnapshot,
+} from "../src/lib/protocol";
+
+type RoomRecord = {
+  _id?: unknown;
+  revealed: boolean;
+  selectedIssueId: string | null;
+  orchestratorId: string | null;
+  orchestratorView: OrchestratorViewSnapshot;
+  issueDrafts: IssueDraftSnapshot[];
+  issuePresence: IssuePresenceSnapshot[];
+  jiraIssues: JiraIssueResult | null;
+  jiraSubtasksByIssueId: Record<string, IssueSubtask[]>;
+  estimatedIssueIds: string[];
+};
+
+type ParticipantRecord = {
+  _id: unknown;
+  clientId: string;
+  name: string;
+  colorHue: number;
+  vote: EstimateOption | null;
+  isFollowingOrchestrator: boolean;
+};
+
+type QueryCtx = {
+  db: {
+    query: (table: string) => {
+      first: () => Promise<unknown>;
+      collect: () => Promise<unknown[]>;
+    };
+  };
+};
+
+type MutationCtx = {
+  db: QueryCtx["db"] & {
+    insert: (table: string, value: unknown) => Promise<unknown>;
+    get: (id: unknown) => Promise<unknown>;
+    patch: (id: unknown, value: unknown) => Promise<void>;
+    delete: (id: unknown) => Promise<void>;
+  };
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
 const ESTIMATE_OPTIONS = ['0', '1', '2', '3', '5', '8', '13', '20', '?']
 const allowedVotes = new Set(ESTIMATE_OPTIONS)
@@ -14,13 +70,13 @@ const MAX_ISSUE_FIELDS_PER_DRAFT = 256
 const ISSUE_PRESENCE_TARGET_ID_MAX_LENGTH = 120
 const MAX_ORCHESTRATOR_SCROLL_TOP = 2_000_000
 
-const createEmptyOrchestratorView = () => ({
+const createEmptyOrchestratorView = (): OrchestratorViewSnapshot => ({
   issueId: null,
   targetId: null,
   scrollTop: 0,
 })
 
-const createDefaultRoom = () => ({
+const createDefaultRoom = (): Omit<RoomRecord, '_id'> => ({
   revealed: false,
   selectedIssueId: null,
   orchestratorId: null,
@@ -32,15 +88,15 @@ const createDefaultRoom = () => ({
   estimatedIssueIds: [],
 })
 
-const clone = (value) => JSON.parse(JSON.stringify(value))
+const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
-const normalizeName = (value) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 40) : '')
-const normalizeIssueId = (value) => (typeof value === 'string' ? value.trim().slice(0, FIELD_ID_MAX_LENGTH) : '')
-const normalizeIssueKey = (value) => (typeof value === 'string' ? value.trim().toUpperCase().slice(0, ISSUE_KEY_MAX_LENGTH) : '')
-const normalizeIssueUrl = (value) => (typeof value === 'string' ? value.trim().slice(0, ISSUE_URL_MAX_LENGTH) : '')
-const normalizeIssueText = (value, maxLength = ISSUE_FIELD_MAX_LENGTH) =>
+const normalizeName = (value: unknown) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 40) : '')
+const normalizeIssueId = (value: unknown) => (typeof value === 'string' ? value.trim().slice(0, FIELD_ID_MAX_LENGTH) : '')
+const normalizeIssueKey = (value: unknown) => (typeof value === 'string' ? value.trim().toUpperCase().slice(0, ISSUE_KEY_MAX_LENGTH) : '')
+const normalizeIssueUrl = (value: unknown) => (typeof value === 'string' ? value.trim().slice(0, ISSUE_URL_MAX_LENGTH) : '')
+const normalizeIssueText = (value: unknown, maxLength = ISSUE_FIELD_MAX_LENGTH) =>
   typeof value === 'string' ? value.replace(/\r\n/g, '\n').slice(0, maxLength) : ''
-const normalizeFieldId = (value) => {
+const normalizeFieldId = (value: unknown) => {
   if (typeof value !== 'string') {
     return ''
   }
@@ -51,14 +107,14 @@ const normalizeFieldId = (value) => {
     .replace(/[^a-z0-9._-]/g, '_')
     .slice(0, FIELD_ID_MAX_LENGTH)
 }
-const normalizeFieldLabel = (value, fallback) => {
+const normalizeFieldLabel = (value: unknown, fallback: string) => {
   if (typeof value !== 'string') {
     return fallback.slice(0, FIELD_LABEL_MAX_LENGTH)
   }
   const normalized = value.trim().slice(0, FIELD_LABEL_MAX_LENGTH)
   return normalized || fallback.slice(0, FIELD_LABEL_MAX_LENGTH)
 }
-const normalizeIssuePresenceTargetId = (value) => {
+const normalizeIssuePresenceTargetId = (value: unknown) => {
   if (typeof value !== 'string') {
     return ''
   }
@@ -69,7 +125,7 @@ const normalizeIssuePresenceTargetId = (value) => {
     .replace(/[^a-z0-9:._-]/g, '_')
     .slice(0, ISSUE_PRESENCE_TARGET_ID_MAX_LENGTH)
 }
-const normalizeScrollTop = (value) => {
+const normalizeScrollTop = (value: unknown) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return 0
   }
@@ -81,8 +137,8 @@ const normalizeScrollTop = (value) => {
   }
   return Math.floor(value)
 }
-const normalizeEditorField = (field) => {
-  if (!field || typeof field !== 'object') {
+const normalizeEditorField = (field: unknown): IssueEditorField | null => {
+  if (!isRecord(field)) {
     return null
   }
 
@@ -98,12 +154,12 @@ const normalizeEditorField = (field) => {
   }
 }
 
-const normalizeEditorFields = (value) => {
+const normalizeEditorFields = (value: unknown): IssueEditorField[] => {
   if (!Array.isArray(value)) {
     return []
   }
 
-  const unique = new Map()
+  const unique = new Map<string, IssueEditorField>()
   for (const candidate of value) {
     const field = normalizeEditorField(candidate)
     if (!field) {
@@ -120,15 +176,17 @@ const normalizeEditorFields = (value) => {
   return [...unique.values()]
 }
 
-const normalizeSubtaskTitle = (value) => normalizeIssueText(value, SUBTASK_TITLE_MAX_LENGTH).trim()
+const normalizeSubtaskTitle = (value: unknown) => normalizeIssueText(value, SUBTASK_TITLE_MAX_LENGTH).trim()
 
-const hueDistance = (a, b) => {
+const hueDistance = (a: number, b: number) => {
   const diff = Math.abs(a - b) % 360
   return Math.min(diff, 360 - diff)
 }
 
-const pickDistinctHue = (participants, excludeClientId, avoidHue) => {
-  const usedHues = participants.filter((entry) => entry.clientId !== excludeClientId).map((entry) => entry.colorHue)
+const pickDistinctHue = (participants: ParticipantRecord[], excludeClientId?: string, avoidHue?: number) => {
+  const usedHues = participants
+    .filter((entry) => entry.clientId !== excludeClientId)
+    .map((entry) => entry.colorHue)
 
   if (usedHues.length === 0) {
     const randomHue = Math.floor(Math.random() * 360)
@@ -161,7 +219,7 @@ const pickDistinctHue = (participants, excludeClientId, avoidHue) => {
   return bestHue
 }
 
-const resetOrchestratorView = (room, issueId = room.selectedIssueId) => {
+const resetOrchestratorView = (room: RoomRecord, issueId = room.selectedIssueId) => {
   room.orchestratorView = {
     issueId,
     targetId: null,
@@ -169,14 +227,14 @@ const resetOrchestratorView = (room, issueId = room.selectedIssueId) => {
   }
 }
 
-const canClientControlTicketFlow = (room, clientId) => room.orchestratorId === null || room.orchestratorId === clientId
+const canClientControlTicketFlow = (room: RoomRecord, clientId: string) => room.orchestratorId === null || room.orchestratorId === clientId
 
-const touchIssueDraft = (draft, updatedBy) => {
+const touchIssueDraft = (draft: IssueDraftSnapshot, updatedBy: string | null) => {
   draft.updatedBy = updatedBy
   draft.updatedAt = new Date().toISOString()
 }
 
-const ensureDraftField = (draft, fieldId, label) => {
+const ensureDraftField = (draft: IssueDraftSnapshot, fieldId: string, label: string): IssueEditorField | null => {
   const normalizedFieldId = normalizeFieldId(fieldId)
   if (!normalizedFieldId) {
     return null
@@ -202,7 +260,15 @@ const ensureDraftField = (draft, fieldId, label) => {
   return nextField
 }
 
-const ensureIssueDraft = (room, issueId, issueKey, issueUrl, seedFields, updatedBy, seedSubtasks = []) => {
+const ensureIssueDraft = (
+  room: RoomRecord,
+  issueId: string,
+  issueKey: string,
+  issueUrl: string,
+  seedFields: IssueEditorField[],
+  updatedBy: string | null,
+  seedSubtasks: IssueSubtask[] = [],
+): IssueDraftSnapshot => {
   const existing = room.issueDrafts.find((entry) => entry.issueId === issueId)
   if (existing) {
     if (issueKey) {
@@ -262,12 +328,12 @@ const ensureIssueDraft = (room, issueId, issueKey, issueUrl, seedFields, updated
   return draft
 }
 
-const flattenSharedIssueEntries = (room) => {
+const flattenSharedIssueEntries = (room: RoomRecord): Array<{ issue: JiraIssue; group: JiraIssueGroup }> => {
   if (!room.jiraIssues) {
     return []
   }
 
-  const entries = []
+  const entries: Array<{ issue: JiraIssue; group: JiraIssueGroup }> = []
   for (const group of room.jiraIssues.groups) {
     for (const issue of group.issues) {
       entries.push({ issue, group })
@@ -276,7 +342,7 @@ const flattenSharedIssueEntries = (room) => {
   return entries
 }
 
-const buildWorkspaceSeedFields = (issue, group) =>
+const buildWorkspaceSeedFields = (issue: JiraIssue, group: JiraIssueGroup) =>
   normalizeEditorFields([
     ...(Array.isArray(issue.fields) ? issue.fields : []),
     {
@@ -291,7 +357,7 @@ const buildWorkspaceSeedFields = (issue, group) =>
     },
   ])
 
-const ensureSelectedIssueFromShared = (room, issueId, updatedBy) => {
+const ensureSelectedIssueFromShared = (room: RoomRecord, issueId: string, updatedBy: string | null): boolean => {
   const normalizedIssueId = normalizeIssueId(issueId)
   if (!normalizedIssueId) {
     return false
@@ -317,7 +383,7 @@ const ensureSelectedIssueFromShared = (room, issueId, updatedBy) => {
   return true
 }
 
-const selectFirstSharedIssue = (room) => {
+const selectFirstSharedIssue = (room: RoomRecord): void => {
   const entries = flattenSharedIssueEntries(room)
   if (entries.length === 0) {
     room.selectedIssueId = null
@@ -328,7 +394,7 @@ const selectFirstSharedIssue = (room) => {
   ensureSelectedIssueFromShared(room, entries[0].issue.id, null)
 }
 
-const selectNextSharedIssue = (room) => {
+const selectNextSharedIssue = (room: RoomRecord): void => {
   const entries = flattenSharedIssueEntries(room)
   if (entries.length === 0) {
     room.selectedIssueId = null
@@ -341,7 +407,7 @@ const selectNextSharedIssue = (room) => {
   ensureSelectedIssueFromShared(room, entries[nextIndex].issue.id, null)
 }
 
-const applyEstimatedFlags = (room) => {
+const applyEstimatedFlags = (room: RoomRecord): void => {
   if (!room.jiraIssues) {
     return
   }
@@ -354,7 +420,7 @@ const applyEstimatedFlags = (room) => {
   }
 }
 
-const markIssueEstimated = (room, issueId) => {
+const markIssueEstimated = (room: RoomRecord, issueId: string | null): void => {
   const normalizedIssueId = normalizeIssueId(issueId)
   if (!normalizedIssueId) {
     return
@@ -366,11 +432,11 @@ const markIssueEstimated = (room, issueId) => {
   applyEstimatedFlags(room)
 }
 
-const clearClientIssuePresence = (room, clientId) => {
-  const nextPresence = []
+const clearClientIssuePresence = (room: RoomRecord, clientId: string): void => {
+  const nextPresence: IssuePresenceSnapshot[] = []
   for (const entry of Array.isArray(room.issuePresence) ? room.issuePresence : []) {
     const participantIds = Array.isArray(entry.participantIds)
-      ? entry.participantIds.filter((participantId) => participantId !== clientId)
+      ? entry.participantIds.filter((participantId: string) => participantId !== clientId)
       : []
     if (participantIds.length === 0) {
       continue
@@ -384,7 +450,7 @@ const clearClientIssuePresence = (room, clientId) => {
   room.issuePresence = nextPresence
 }
 
-const clearIssuePresenceByPrefix = (room, issueId, targetPrefix) => {
+const clearIssuePresenceByPrefix = (room: RoomRecord, issueId: string, targetPrefix: string): void => {
   const normalizedIssueId = normalizeIssueId(issueId)
   const normalizedTargetPrefix = normalizeIssuePresenceTargetId(targetPrefix)
   if (!normalizedIssueId || !normalizedTargetPrefix) {
@@ -392,11 +458,12 @@ const clearIssuePresenceByPrefix = (room, issueId, targetPrefix) => {
   }
 
   room.issuePresence = (Array.isArray(room.issuePresence) ? room.issuePresence : []).filter(
-    (entry) => !(entry.issueId === normalizedIssueId && typeof entry.targetId === 'string' && entry.targetId.startsWith(normalizedTargetPrefix)),
+    (entry) =>
+      !(entry.issueId === normalizedIssueId && typeof entry.targetId === 'string' && entry.targetId.startsWith(normalizedTargetPrefix)),
   )
 }
 
-const setIssuePresenceState = (room, clientId, issueId, targetId, active) => {
+const setIssuePresenceState = (room: RoomRecord, clientId: string, issueId: string, targetId: string, active: boolean): boolean => {
   const normalizedIssueId = normalizeIssueId(issueId)
   const normalizedTargetId = normalizeIssuePresenceTargetId(targetId)
   if (!normalizedIssueId || !normalizedTargetId) {
@@ -431,7 +498,7 @@ const setIssuePresenceState = (room, clientId, issueId, targetId, active) => {
     return false
   }
 
-  const nextParticipantIds = existing.participantIds.filter((participantId) => participantId !== clientId)
+  const nextParticipantIds = existing.participantIds.filter((participantId: string) => participantId !== clientId)
   if (nextParticipantIds.length === existing.participantIds.length) {
     return false
   }
@@ -446,7 +513,7 @@ const setIssuePresenceState = (room, clientId, issueId, targetId, active) => {
   return true
 }
 
-const setOrchestratorView = (room, nextView) => {
+const setOrchestratorView = (room: RoomRecord, nextView: OrchestratorViewSnapshot): boolean => {
   const normalizedIssueId = nextView.issueId ? normalizeIssueId(nextView.issueId) : null
   const normalizedTargetId = nextView.targetId ? normalizeIssuePresenceTargetId(nextView.targetId) : null
   const normalizedScrollTop = normalizeScrollTop(nextView.scrollTop)
@@ -469,7 +536,7 @@ const setOrchestratorView = (room, nextView) => {
   return true
 }
 
-const makeEmptySnapshot = (clientId) => ({
+const makeEmptySnapshot = (clientId: string): RoomStateSnapshot => ({
   revealed: false,
   myId: clientId,
   myVote: null,
@@ -484,21 +551,89 @@ const makeEmptySnapshot = (clientId) => ({
   jiraIssues: null,
 })
 
-const ensureRoom = async (ctx) => {
-  const existing = await ctx.db.query('rooms').first()
+const normalizeRoom = (raw: unknown): RoomRecord | null => {
+  if (!isRecord(raw)) {
+    return null
+  }
+
+  const defaults = createDefaultRoom()
+  return {
+    _id: raw._id,
+    revealed: typeof raw.revealed === 'boolean' ? raw.revealed : defaults.revealed,
+    selectedIssueId: typeof raw.selectedIssueId === 'string' ? raw.selectedIssueId : null,
+    orchestratorId: typeof raw.orchestratorId === 'string' ? raw.orchestratorId : null,
+    orchestratorView: isRecord(raw.orchestratorView)
+      ? {
+          issueId: typeof raw.orchestratorView.issueId === 'string' ? raw.orchestratorView.issueId : null,
+          targetId: typeof raw.orchestratorView.targetId === 'string' ? raw.orchestratorView.targetId : null,
+          scrollTop: normalizeScrollTop(raw.orchestratorView.scrollTop),
+        }
+      : defaults.orchestratorView,
+    issueDrafts: Array.isArray(raw.issueDrafts) ? (clone(raw.issueDrafts) as IssueDraftSnapshot[]) : defaults.issueDrafts,
+    issuePresence: Array.isArray(raw.issuePresence) ? (clone(raw.issuePresence) as IssuePresenceSnapshot[]) : defaults.issuePresence,
+    jiraIssues: raw.jiraIssues ? (clone(raw.jiraIssues) as JiraIssueResult) : null,
+    jiraSubtasksByIssueId: isRecord(raw.jiraSubtasksByIssueId)
+      ? (clone(raw.jiraSubtasksByIssueId) as Record<string, IssueSubtask[]>)
+      : defaults.jiraSubtasksByIssueId,
+    estimatedIssueIds: Array.isArray(raw.estimatedIssueIds)
+      ? raw.estimatedIssueIds.map((value) => (typeof value === 'string' ? value : '')).filter(Boolean)
+      : defaults.estimatedIssueIds,
+  }
+}
+
+const normalizeParticipant = (raw: unknown): ParticipantRecord | null => {
+  if (!isRecord(raw)) {
+    return null
+  }
+
+  const clientId = normalizeIssueId(raw.clientId)
+  if (!clientId) {
+    return null
+  }
+
+  return {
+    _id: raw._id,
+    clientId,
+    name: normalizeName(raw.name),
+    colorHue: typeof raw.colorHue === 'number' && Number.isFinite(raw.colorHue) ? Math.floor(raw.colorHue) : 210,
+    vote: raw.vote === null || (typeof raw.vote === 'string' && allowedVotes.has(raw.vote)) ? (raw.vote as EstimateOption | null) : null,
+    isFollowingOrchestrator: raw.isFollowingOrchestrator === true,
+  }
+}
+
+const ensureRoom = async (ctx: MutationCtx): Promise<RoomRecord> => {
+  const existing = normalizeRoom(await ctx.db.query('rooms').first())
   if (existing) {
     return existing
   }
 
   const roomId = await ctx.db.insert('rooms', createDefaultRoom())
-  return await ctx.db.get(roomId)
+  const created = normalizeRoom(await ctx.db.get(roomId))
+  if (created) {
+    return created
+  }
+
+  return {
+    _id: roomId,
+    ...createDefaultRoom(),
+  }
 }
 
-const listParticipants = async (ctx) => await ctx.db.query('participants').collect()
+const listParticipants = async (ctx: QueryCtx): Promise<ParticipantRecord[]> => {
+  const records = await ctx.db.query('participants').collect()
+  return records
+    .map((entry) => normalizeParticipant(entry))
+    .filter((entry): entry is ParticipantRecord => entry !== null)
+}
 
-const findParticipant = (participants, clientId) => participants.find((entry) => entry.clientId === clientId) ?? null
+const findParticipant = (participants: ParticipantRecord[], clientId: string): ParticipantRecord | null =>
+  participants.find((entry) => entry.clientId === clientId) ?? null
 
-const persistRoom = async (ctx, room) => {
+const persistRoom = async (ctx: MutationCtx, room: RoomRecord): Promise<void> => {
+  if (!room._id) {
+    return
+  }
+
   await ctx.db.patch(room._id, {
     revealed: room.revealed,
     selectedIssueId: room.selectedIssueId,
@@ -512,21 +647,28 @@ const persistRoom = async (ctx, room) => {
   })
 }
 
-const resetRoomIfEmpty = async (ctx, room) => {
+const resetRoomIfEmpty = async (ctx: MutationCtx, room: RoomRecord): Promise<void> => {
   const participants = await listParticipants(ctx)
   if (participants.length > 0) {
     return
   }
 
   const defaultRoom = createDefaultRoom()
-  await ctx.db.patch(room._id, defaultRoom)
+  if (room._id) {
+    await ctx.db.patch(room._id, defaultRoom)
+  }
 }
 
 export const snapshot = query({
-  handler: async (ctx, args) => {
+  args: {
+    clientId: v.optional(v.string()),
+  },
+  handler: async (ctx, args: { clientId?: string } | undefined): Promise<RoomStateSnapshot> => {
     const clientId = typeof args?.clientId === 'string' && args.clientId.trim() ? args.clientId.trim() : crypto.randomUUID()
-    const room = await ensureRoom(ctx)
-    const participants = await listParticipants(ctx)
+    const room = normalizeRoom(await (ctx as QueryCtx).db.query('rooms').first()) ?? {
+      ...createDefaultRoom(),
+    }
+    const participants = await listParticipants(ctx as QueryCtx)
     const me = findParticipant(participants, clientId)
 
     const participantViews = participants
@@ -563,19 +705,23 @@ export const snapshot = query({
 })
 
 export const sendEvent = mutation({
-  handler: async (ctx, args) => {
+  args: {
+    clientId: v.optional(v.string()),
+    event: v.optional(v.any()),
+  },
+  handler: async (ctx, args: { clientId?: string; event?: unknown } | undefined) => {
     const clientId = typeof args?.clientId === 'string' ? args.clientId.trim() : ''
-    const event = args?.event
+    const event = args?.event as ClientEvent | undefined
     if (!clientId || !event || typeof event !== 'object' || typeof event.type !== 'string') {
       return { ok: false, message: 'Invalid message format.' }
     }
 
-    const roomDoc = await ensureRoom(ctx)
+    const roomDoc = await ensureRoom(ctx as MutationCtx)
     const room = {
       ...clone(roomDoc),
       _id: roomDoc._id,
     }
-    const participants = await listParticipants(ctx)
+    const participants = await listParticipants(ctx as QueryCtx)
     const participant = findParticipant(participants, clientId)
 
     switch (event.type) {
@@ -593,7 +739,7 @@ export const sendEvent = mutation({
         }
 
         if (participant) {
-          await ctx.db.patch(participant._id, { name: normalizedName })
+          await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { name: normalizedName })
         } else {
           await ctx.db.insert('participants', {
             clientId,
@@ -605,7 +751,7 @@ export const sendEvent = mutation({
           if (!room.orchestratorId && room.jiraIssues) {
             room.orchestratorId = clientId
             resetOrchestratorView(room, room.selectedIssueId)
-            await persistRoom(ctx, room)
+            await persistRoom(ctx as MutationCtx, room)
           }
         }
 
@@ -621,7 +767,7 @@ export const sendEvent = mutation({
           return { ok: false, message: 'Display name cannot be empty.' }
         }
 
-        await ctx.db.patch(participant._id, { name: normalizedName })
+        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { name: normalizedName })
         return { ok: true }
       }
       case 'reroll_color': {
@@ -629,7 +775,7 @@ export const sendEvent = mutation({
           return { ok: false, message: 'Join before changing your color.' }
         }
 
-        await ctx.db.patch(participant._id, {
+        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], {
           colorHue: pickDistinctHue(participants, clientId, participant.colorHue),
         })
         return { ok: true }
@@ -643,7 +789,7 @@ export const sendEvent = mutation({
           return { ok: false, message: 'Vote was rejected.' }
         }
 
-        await ctx.db.patch(participant._id, { vote: event.vote === null ? null : event.vote })
+        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { vote: event.vote === null ? null : event.vote })
         return { ok: true }
       }
       case 'select_issue': {
@@ -668,7 +814,7 @@ export const sendEvent = mutation({
           }
         }
 
-        await persistRoom(ctx, room)
+        await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
       case 'set_issue_field': {
@@ -695,7 +841,7 @@ export const sendEvent = mutation({
         draftField.value = normalizeIssueText(field.value)
         touchIssueDraft(draft, clientId)
 
-        await persistRoom(ctx, room)
+        await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
       case 'issue_crdt_delta': {
@@ -730,7 +876,7 @@ export const sendEvent = mutation({
         })
 
         touchIssueDraft(draft, clientId)
-        await persistRoom(ctx, room)
+        await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
       case 'set_issue_presence': {
@@ -753,7 +899,7 @@ export const sendEvent = mutation({
           return { ok: true }
         }
 
-        await persistRoom(ctx, room)
+        await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
       case 'set_orchestrator_view': {
@@ -783,7 +929,7 @@ export const sendEvent = mutation({
           return { ok: true }
         }
 
-        await persistRoom(ctx, room)
+        await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
       case 'set_follow_orchestrator': {
@@ -796,7 +942,7 @@ export const sendEvent = mutation({
           return { ok: true }
         }
 
-        await ctx.db.patch(participant._id, { isFollowingOrchestrator: nextState })
+        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { isFollowingOrchestrator: nextState })
         return { ok: true }
       }
       case 'reveal': {
@@ -805,7 +951,7 @@ export const sendEvent = mutation({
         }
 
         room.revealed = true
-        await persistRoom(ctx, room)
+        await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
       case 'next_ticket': {
@@ -821,7 +967,7 @@ export const sendEvent = mutation({
         room.revealed = false
         for (const entry of participants) {
           if (entry.vote !== null) {
-            await ctx.db.patch(entry._id, { vote: null })
+            await ctx.db.patch(entry._id as Parameters<typeof ctx.db.patch>[0], { vote: null })
           }
         }
 
@@ -832,12 +978,12 @@ export const sendEvent = mutation({
           requestedNextIssueId &&
           ensureSelectedIssueFromShared(room, requestedNextIssueId, null)
         ) {
-          await persistRoom(ctx, room)
+          await persistRoom(ctx as MutationCtx, room)
           return { ok: true }
         }
 
         selectNextSharedIssue(room)
-        await persistRoom(ctx, room)
+        await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
       default:
@@ -847,23 +993,40 @@ export const sendEvent = mutation({
 })
 
 export const setJiraIssues = mutation({
-  handler: async (ctx, args) => {
-    const roomDoc = await ensureRoom(ctx)
+  args: {
+    participantId: v.optional(v.string()),
+    jiraIssues: v.optional(v.any()),
+    jiraSubtasksByIssueId: v.optional(v.any()),
+  },
+  handler: async (
+    ctx,
+    args:
+      | {
+          participantId?: string
+          jiraIssues?: unknown
+          jiraSubtasksByIssueId?: unknown
+        }
+      | undefined,
+  ) => {
+    const roomDoc = await ensureRoom(ctx as MutationCtx)
     const room = {
       ...clone(roomDoc),
       _id: roomDoc._id,
     }
 
-    const jiraIssues = args?.jiraIssues
-    if (!jiraIssues || typeof jiraIssues !== 'object' || !Array.isArray(jiraIssues.groups)) {
+    const jiraIssuesCandidate = args?.jiraIssues
+    if (!isRecord(jiraIssuesCandidate) || !Array.isArray(jiraIssuesCandidate.groups)) {
       return { ok: false, message: 'Invalid Jira issue payload.' }
     }
+    const jiraIssues = clone(jiraIssuesCandidate) as JiraIssueResult
 
-    room.jiraIssues = clone(jiraIssues)
-    room.jiraSubtasksByIssueId = clone(args?.jiraSubtasksByIssueId ?? {})
+    room.jiraIssues = jiraIssues
+    room.jiraSubtasksByIssueId = isRecord(args?.jiraSubtasksByIssueId)
+      ? (clone(args?.jiraSubtasksByIssueId) as Record<string, IssueSubtask[]>)
+      : {}
     applyEstimatedFlags(room)
 
-    const participants = await listParticipants(ctx)
+    const participants = await listParticipants(ctx as QueryCtx)
     const requesterId = typeof args?.participantId === 'string' ? args.participantId.trim() : ''
     if (requesterId && participants.some((entry) => entry.clientId === requesterId)) {
       room.orchestratorId = requesterId
@@ -877,27 +1040,30 @@ export const setJiraIssues = mutation({
       selectFirstSharedIssue(room)
     }
 
-    await persistRoom(ctx, room)
-    return { ok: true, jiraIssues: room.jiraIssues }
+    await persistRoom(ctx as MutationCtx, room)
+    return { ok: true, jiraIssues }
   },
 })
 
 export const leave = mutation({
-  handler: async (ctx, args) => {
+  args: {
+    clientId: v.optional(v.string()),
+  },
+  handler: async (ctx, args: { clientId?: string } | undefined) => {
     const clientId = typeof args?.clientId === 'string' ? args.clientId.trim() : ''
     if (!clientId) {
       return { ok: true }
     }
 
-    const roomDoc = await ensureRoom(ctx)
+    const roomDoc = await ensureRoom(ctx as MutationCtx)
     const room = {
       ...clone(roomDoc),
       _id: roomDoc._id,
     }
-    const participants = await listParticipants(ctx)
+    const participants = await listParticipants(ctx as QueryCtx)
     const participant = findParticipant(participants, clientId)
     if (participant) {
-      await ctx.db.delete(participant._id)
+      await ctx.db.delete(participant._id as Parameters<typeof ctx.db.delete>[0])
     }
 
     if (room.orchestratorId === clientId) {
@@ -907,8 +1073,8 @@ export const leave = mutation({
     }
 
     clearClientIssuePresence(room, clientId)
-    await persistRoom(ctx, room)
-    await resetRoomIfEmpty(ctx, room)
+    await persistRoom(ctx as MutationCtx, room)
+    await resetRoomIfEmpty(ctx as MutationCtx, room)
     return { ok: true }
   },
 })

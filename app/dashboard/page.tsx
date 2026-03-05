@@ -1,8 +1,10 @@
 'use client'
 
-import { Show, SignInButton, useUser } from '@clerk/nextjs'
-import Link from 'next/link'
+import { useUser } from '@clerk/tanstack-react-start'
+import { Link } from '@tanstack/react-router'
+import { useAction } from 'convex/react'
 import { useEffect, useState } from 'react'
+import { api } from '../../convex/_generated/api.js'
 import { Button, buttonVariants } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
@@ -115,7 +117,8 @@ const parseIssueCount = (payload: unknown): number => {
 }
 
 export default function DashboardPage() {
-  const { user } = useUser()
+  const loadJiraIssuesAction = useAction(api.jira.loadIssues)
+  const { user, isSignedIn } = useUser()
   const [jiraConfig, setJiraConfig] = useState<JiraConfig>(createDefaultJiraConfig)
   const [isStartingSession, setIsStartingSession] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
@@ -146,26 +149,20 @@ export default function DashboardPage() {
     setSuccessMessage('')
 
     try {
-      const response = await fetch('/api/jira/issues', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ...normalized,
-          quickFilterFieldIds: parseQuickFilterFieldIds(normalized.quickFilterFieldIds),
-        }),
+      const result = await loadJiraIssuesAction({
+        baseUrl: normalized.baseUrl,
+        email: normalized.email,
+        apiToken: normalized.apiToken,
+        ticketPrefix: normalized.ticketPrefix,
+        quickFilterFieldIds: parseQuickFilterFieldIds(normalized.quickFilterFieldIds),
       })
 
-      const payload = (await response.json().catch(() => null)) as unknown
-
-      if (!response.ok) {
-        const message = isRecord(payload) && typeof payload.message === 'string' ? payload.message : 'Failed to start planning session.'
-        setErrorMessage(message)
+      if (!result.ok) {
+        setErrorMessage(result.message || 'Failed to start planning session.')
         return
       }
 
-      const ticketCount = parseIssueCount(payload)
+      const ticketCount = parseIssueCount(result.jiraIssues)
       setSuccessMessage(
         ticketCount > 0
           ? `Session started with ${ticketCount} Jira tickets. Participants can now join the planning room.`
@@ -180,7 +177,7 @@ export default function DashboardPage() {
 
   return (
     <main className="dashboard-shell py-8">
-      <Show when="signed-out">
+      {!isSignedIn ? (
         <Card className="dashboard-panel border-neutral-200 shadow-sm">
           <CardHeader className="pb-3">
             <p className="eyebrow">Facilitator Console</p>
@@ -188,16 +185,14 @@ export default function DashboardPage() {
             <CardDescription className="summary">Sign in with Clerk to configure Jira and start a planning session.</CardDescription>
           </CardHeader>
           <CardContent>
-            <SignInButton mode="modal">
-              <Button type="button">
-                Sign in to continue
-              </Button>
-            </SignInButton>
+            <Link to="/sign-in" className={buttonVariants()}>
+              Sign in to continue
+            </Link>
           </CardContent>
         </Card>
-      </Show>
+      ) : null}
 
-      <Show when="signed-in">
+      {isSignedIn ? (
         <Card className="dashboard-panel border-neutral-200 shadow-sm">
           <CardHeader className="pb-3">
             <p className="eyebrow">Facilitator Console</p>
@@ -287,7 +282,7 @@ export default function DashboardPage() {
             {successMessage ? <p className="jira-message">{successMessage}</p> : null}
 
             <div className="dashboard-actions">
-              <Link href="/" className={buttonVariants({ variant: 'secondary' })}>
+              <Link to="/" className={buttonVariants({ variant: 'secondary' })}>
                 Open planning room
               </Link>
             </div>
@@ -295,7 +290,7 @@ export default function DashboardPage() {
             <p className="jira-config-note">Share this URL with participants: {planningRoomUrl}</p>
           </CardContent>
         </Card>
-      </Show>
+      ) : null}
     </main>
   )
 }

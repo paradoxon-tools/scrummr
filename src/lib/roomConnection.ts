@@ -152,7 +152,10 @@ export class RoomConnection {
 }
 
 export const createRoomConnection = (): RoomConnection | null => {
-  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL?.trim() ?? ''
+  const convexUrl =
+    import.meta.env.VITE_CONVEX_URL?.trim() ||
+    import.meta.env.NEXT_PUBLIC_CONVEX_URL?.trim() ||
+    ''
   if (!convexUrl) {
     return null
   }
