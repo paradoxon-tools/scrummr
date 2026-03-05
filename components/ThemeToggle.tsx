@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Button } from './ui/button'
 
 type ThemeMode = 'light' | 'dark'
 
@@ -38,8 +37,24 @@ export default function ThemeToggle() {
   }
 
   return (
-    <Button type="button" variant="ghost" size="sm" className="theme-toggle" onClick={toggleThemeMode}>
-      {themeMode === 'dark' ? 'Use light mode' : 'Use dark mode'}
-    </Button>
+    <button
+      type="button"
+      onClick={toggleThemeMode}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-[var(--color-accent-subtle)]"
+      style={{ color: 'var(--color-text-secondary)' }}
+      aria-label={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+    >
+      {themeMode === 'dark' ? (
+        <svg viewBox="0 0 20 20" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="10" cy="10" r="4" />
+          <path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 20 20" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M17.5 10.5a7.5 7.5 0 01-10-10A7.5 7.5 0 1017.5 10.5z" />
+        </svg>
+      )}
+    </button>
   )
 }

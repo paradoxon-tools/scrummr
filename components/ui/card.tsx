@@ -2,7 +2,16 @@ import * as React from 'react'
 import { cn } from '../../src/lib/utils'
 
 function Card({ className, ...props }: React.ComponentProps<'div'>) {
-  return <div className={cn('rounded-xl border border-neutral-200 bg-white text-neutral-900 shadow-sm', className)} {...props} />
+  return (
+    <div
+      className={cn(
+        'rounded-xl border bg-[var(--color-surface)] text-[var(--color-text-primary)]',
+        className,
+      )}
+      style={{ borderColor: 'var(--color-border)', boxShadow: 'var(--shadow-sm)' }}
+      {...props}
+    />
+  )
 }
 
 function CardHeader({ className, ...props }: React.ComponentProps<'div'>) {
@@ -10,11 +19,11 @@ function CardHeader({ className, ...props }: React.ComponentProps<'div'>) {
 }
 
 function CardTitle({ className, ...props }: React.ComponentProps<'h3'>) {
-  return <h3 className={cn('text-base font-semibold leading-none tracking-tight', className)} {...props} />
+  return <h3 className={cn('text-lg font-semibold leading-none tracking-tight', className)} {...props} />
 }
 
 function CardDescription({ className, ...props }: React.ComponentProps<'p'>) {
-  return <p className={cn('text-sm text-neutral-600', className)} {...props} />
+  return <p className={cn('text-sm', className)} style={{ color: 'var(--color-text-secondary)' }} {...props} />
 }
 
 function CardContent({ className, ...props }: React.ComponentProps<'div'>) {

@@ -1,15 +1,13 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from '@tanstack/react-router'
 import { useAction } from 'convex/react'
 import * as Y from 'yjs'
 import { api } from '../convex/_generated/api.js'
-import CodeMirrorField from '../components/CodeMirrorField'
-import { Badge } from '../components/ui/badge'
-import { Button, buttonVariants } from '../components/ui/button'
-import { Card } from '../components/ui/card'
-import { Input } from '../components/ui/input'
+import JoinView from '../components/planning/JoinView'
+import JiraTicketList from '../components/planning/JiraTicketList'
+import TicketWorkspace from '../components/planning/TicketWorkspace'
+import ParticipantsPanel from '../components/planning/ParticipantsPanel'
 import { createRoomConnection, type RoomConnection } from '../src/lib/roomConnection'
 import {
   ESTIMATE_OPTIONS,
@@ -1943,565 +1941,161 @@ export default function HomePage() {
   const selectedIssueKey = selectedIssueDraft?.issueKey || selectedIssueFromJira?.key || ''
 
   return (
-    <main
-      className={isConnected ? 'app-shell connected' : 'app-shell'}
-      onWheelCapture={(event) => {
-        if (!isConnected || !middleScrollRef.current || event.ctrlKey) {
-          return
-        }
-
-        const target = event.target as Node | null
-        if (target && jiraListScrollRef.current?.contains(target)) {
-          return
-        }
-
-        if (!isCurrentUserOrchestrator() && canFollowCurrentOrchestrator() && isFollowingOrchestrator) {
-          isFollowingOrchestratorRef.current = false
-          setIsFollowingOrchestrator(false)
-          syncOrchestratorFollowState(true)
-        }
-
-        event.preventDefault()
-        middleScrollRef.current.scrollBy({ top: event.deltaY })
-      }}
-    >
-      <header className="topbar">
-        <div className="brand">
-          <p className="eyebrow">Dericon Scrum Poker</p>
-          <h1>Scrummer</h1>
-        </div>
-      </header>
-
+    <main style={{ background: 'var(--color-bg)' }}>
       {!isConnected ? (
-        <Card className="join-view panel border-neutral-200 bg-white shadow-sm">
-          <h2>Join planning room</h2>
-          <p>
-            {isSocketConnected
-              ? 'Session is not open yet. Stay on this page and you will be joined automatically once it starts.'
-              : 'Enter your name. You can join without logging in.'}
-          </p>
-          <form
-            className="join-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              connect()
-            }}
-          >
-            <label htmlFor="join-display-name">Display name</label>
-            <Input
-              id="join-display-name"
-              maxLength={40}
-              value={nameInput}
-              placeholder="Your display name"
-              autoComplete="name"
-              onChange={(event) => handleNameInput(event.currentTarget.value)}
-            />
-            <Button type="submit" disabled={isConnecting}>
-              {isConnecting ? 'Connecting...' : isSocketConnected ? 'Waiting for session...' : 'Join'}
-            </Button>
-          </form>
-          <p className="jira-config-note">
-            Facilitator? Open the <Link to="/dashboard">dashboard</Link> to connect Jira and start the session.
-          </p>
-        </Card>
+        <JoinView
+          nameInput={nameInput}
+          isConnecting={isConnecting}
+          isSocketConnected={isSocketConnected}
+          connectionMessage={connectionMessage}
+          onNameChange={handleNameInput}
+          onSubmit={connect}
+        />
       ) : (
-        <section className="workspace">
-          <div
-            className="middle-scroll"
+        <div
+          className="planning-layout"
+          onWheelCapture={(event) => {
+            if (!isConnected || !middleScrollRef.current || event.ctrlKey) {
+              return
+            }
+
+            const target = event.target as Node | null
+            if (target && jiraListScrollRef.current?.contains(target)) {
+              return
+            }
+
+            if (!isCurrentUserOrchestrator() && canFollowCurrentOrchestrator() && isFollowingOrchestrator) {
+              isFollowingOrchestratorRef.current = false
+              setIsFollowingOrchestrator(false)
+              syncOrchestratorFollowState(true)
+            }
+
+            event.preventDefault()
+            middleScrollRef.current.scrollBy({ top: event.deltaY })
+          }}
+        >
+          {/* Left sidebar: Jira tickets */}
+          <section className="planning-sidebar">
+            <JiraTicketList
+              jiraIssues={jiraIssues}
+              visibleJiraGroups={visibleJiraGroups}
+              selectedIssueId={selectedIssueId}
+              jiraError={jiraError}
+              jiraMessage={jiraMessage}
+              quickFilterBadges={quickFilterBadges}
+              activeQuickFilterBadgeId={activeQuickFilterBadgeId}
+              activeQuickFilterBadge={activeQuickFilterBadge}
+              onSelectIssue={selectIssue}
+              onSetQuickFilter={setActiveQuickFilterBadgeId}
+              jiraListScrollRef={(node) => {
+                jiraListScrollRef.current = node
+              }}
+            />
+          </section>
+
+          {/* Center: Ticket workspace */}
+          <section
+            className="planning-main"
             ref={(node) => {
               middleScrollRef.current = node
             }}
             onScroll={handleMiddleScroll}
           >
-            <section
-              className="panel summary issue-editor"
-              ref={(node) => {
+            <TicketWorkspace
+              selectedIssueId={selectedIssueId}
+              selectedIssueKey={selectedIssueKey}
+              selectedIssueDraft={selectedIssueDraft}
+              selectedIssueFromJira={selectedIssueFromJira}
+              visibleIssueFields={visibleIssueFields}
+              votedCount={votedCount}
+              totalCount={totalCount}
+              revealed={roomState.revealed}
+              isRawTicketDataOpen={isRawTicketDataOpen}
+              isCrdtDebugOpen={isCrdtDebugOpen}
+              selectedIssueRawData={selectedIssueRawData}
+              selectedIssueCrdtSync={selectedIssueCrdtSync}
+              selectedIssueCrdtSyncedCount={selectedIssueCrdtSyncedCount}
+              orchestratorColorHue={orchestratorParticipant?.colorHue ?? 210}
+              followedFieldTargetId={followedFieldTargetId}
+              newSubtaskTitle={newSubtaskTitle}
+              onToggleRawData={() => setIsRawTicketDataOpen((value) => !value)}
+              onToggleCrdtDebug={() => setIsCrdtDebugOpen((value) => !value)}
+              onFieldInput={(issueId, issueKey, issueUrl, field, value) => {
+                send({
+                  type: 'set_issue_field',
+                  issueId,
+                  issueKey,
+                  issueUrl,
+                  field: { id: field.id, label: field.label, value },
+                })
+              }}
+              onFieldFocus={handleIssueFieldFocus}
+              onFieldBlur={handleIssueFieldBlur}
+              onNewSubtaskTitleChange={setNewSubtaskTitle}
+              onAddSubtask={addIssueSubtask}
+              getPresenceLabelForTarget={getPresenceLabelForTarget}
+              isTargetEditedByOthers={isTargetEditedByOthers}
+              getIssueFieldYText={() => null}
+              shouldUseMarkdownEditor={shouldUseMarkdownEditor}
+              fieldPresenceTargetId={fieldPresenceTargetId}
+              ticketWorkspaceRef={(node) => {
                 ticketWorkspaceRef.current = node
               }}
-            >
-              <div className="panel-heading">
-                <h2>Ticket Workspace</h2>
-                <p>
-                  {votedCount} of {totalCount} participants have voted.
-                </p>
-              </div>
-
-              {selectedIssueId ? (
-                <>
-                  <div className="issue-header">
-                    <div>
-                      <strong>{selectedIssueKey}</strong>
-                    </div>
-                    <div className="issue-header-actions">
-                      <Button type="button" variant="ghost" size="sm" className="text-button compact" onClick={() => setIsRawTicketDataOpen((value) => !value)}>
-                        {isRawTicketDataOpen ? 'Hide raw data' : 'View raw data'}
-                      </Button>
-                      <Button type="button" variant="ghost" size="sm" className="text-button compact" onClick={() => setIsCrdtDebugOpen((value) => !value)}>
-                        {isCrdtDebugOpen ? 'Hide CRDT debug' : 'CRDT debug'}
-                      </Button>
-                      {selectedIssueDraft?.issueUrl ? (
-                        <a href={selectedIssueDraft.issueUrl} target="_blank" rel="noreferrer">
-                          Open in Jira
-                        </a>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {isRawTicketDataOpen ? (
-                    <section className="raw-ticket-data">
-                      <h3>Raw ticket data</h3>
-                      <pre>{selectedIssueRawData}</pre>
-                    </section>
-                  ) : null}
-
-                  {isCrdtDebugOpen ? (
-                    <section className="raw-ticket-data">
-                      <h3>CRDT sync</h3>
-                      <p>
-                        {selectedIssueCrdtSyncedCount} / {selectedIssueCrdtSync.length} fields in sync.
-                      </p>
-                      <ul className="crdt-debug-list">
-                        {selectedIssueCrdtSync.map((entry) => (
-                          <li key={`${selectedIssueId ?? ''}:sync:${entry.id}`}>
-                            <span>{entry.label}</span>
-                            <span>
-                              {entry.synced ? 'synced' : 'resyncing'} ({entry.docLength}/{entry.draftLength})
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </section>
-                  ) : null}
-
-                  {selectedIssueDraft ? (
-                    <div className="issue-fields" style={{ ['--follow-hue' as string]: String(orchestratorParticipant?.colorHue ?? 210) }}>
-                      {visibleIssueFields.map((field) => {
-                        const fieldPresenceTarget = fieldPresenceTargetId(field.id)
-                        const fieldPresenceLabel = getPresenceLabelForTarget(fieldPresenceTarget)
-                        return (
-                          <div
-                            key={`${selectedIssueId ?? ''}:${field.id}`}
-                            className={`issue-field${isTargetEditedByOthers(fieldPresenceTarget) ? ' busy' : ''}${
-                              followedFieldTargetId === fieldPresenceTarget ? ' follow-highlight' : ''
-                            }`}
-                          >
-                            <p className="issue-field-label">{field.label}</p>
-                            {fieldPresenceLabel ? (
-                              <p className={`presence-indicator${isTargetEditedByOthers(fieldPresenceTarget) ? ' others' : ''}`}>
-                                {fieldPresenceLabel}
-                              </p>
-                            ) : null}
-                            <CodeMirrorField
-                              value={field.value}
-                              yText={null}
-                              minRows={field.id === 'description' ? 6 : 3}
-                              busy={isTargetEditedByOthers(fieldPresenceTarget)}
-                              markdownMode={shouldUseMarkdownEditor(field.id)}
-                              onInput={(value) => {
-                                if (!selectedIssueId || !selectedIssueKey) {
-                                  return
-                                }
-
-                                send({
-                                  type: 'set_issue_field',
-                                  issueId: selectedIssueId,
-                                  issueKey: selectedIssueKey,
-                                  issueUrl: selectedIssueDraft?.issueUrl ?? selectedIssueFromJira?.url ?? '',
-                                  field: {
-                                    id: field.id,
-                                    label: field.label,
-                                    value,
-                                  },
-                                })
-                              }}
-                              onFocus={() => handleIssueFieldFocus(fieldPresenceTarget)}
-                              onBlur={() => handleIssueFieldBlur(fieldPresenceTarget)}
-                            />
-                          </div>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <p className="jira-empty">Issue details are loading into the shared workspace.</p>
-                  )}
-
-                  <section className="subtasks">
-                    <div className="subtasks-header">
-                      <h3>Subtasks</h3>
-                    </div>
-
-                    {selectedIssueDraft && selectedIssueDraft.subtasks.length > 0 ? (
-                      <ul className="subtask-list">
-                        {selectedIssueDraft.subtasks.map((subtask) => {
-                          const subtaskIdentifier = subtask.key || subtask.id
-                          return (
-                            <li key={subtask.id}>
-                              <div className="subtask-item-main">
-                                <span className="subtask-id">{subtaskIdentifier}</span>
-                                <span className="subtask-title">{subtask.title}</span>
-                              </div>
-                              {subtask.url ? (
-                                <a
-                                  className="subtask-jira-link"
-                                  href={subtask.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  aria-label={`Open ${subtaskIdentifier} in Jira`}
-                                  title="Open in Jira"
-                                >
-                                  <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                                    <path
-                                      d="M6 3h7v7M13 3L7 9M10 13H3V6"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      strokeWidth="1.4"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  </svg>
-                                </a>
-                              ) : (
-                                <span className="subtask-jira-link disabled" aria-hidden="true">
-                                  <svg viewBox="0 0 16 16" focusable="false">
-                                    <path
-                                      d="M6 3h7v7M13 3L7 9M10 13H3V6"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      strokeWidth="1.4"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  </svg>
-                                </span>
-                              )}
-                            </li>
-                          )
-                        })}
-                      </ul>
-                    ) : (
-                      <p className="jira-empty">No subtasks yet.</p>
-                    )}
-
-                    <div className="subtask-add">
-                      <Input
-                        value={newSubtaskTitle}
-                        placeholder="Add subtask title"
-                        onChange={(event) => setNewSubtaskTitle(event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            addIssueSubtask()
-                          }
-                        }}
-                      />
-                      <Button type="button" variant="secondary" onClick={addIssueSubtask}>
-                        Add
-                      </Button>
-                    </div>
-                  </section>
-                </>
-              ) : (
-                <div className="ticket-placeholder">
-                  <h3>No ticket selected</h3>
-                  <p>Pick a ticket from the left list to open it in the shared workspace.</p>
-                </div>
-              )}
-
-              <p>
-                {roomState.revealed ? (
-                  <>
-                    Votes are revealed and remain editable until someone selects <strong>Next ticket</strong>.
-                  </>
-                ) : (
-                  'Votes stay hidden until any participant reveals.'
-                )}
-              </p>
-            </section>
-          </div>
-
-          <section className="participants">
-            <div className="participants-heading">
-              <h2>Participants</h2>
-            </div>
-
-            {orchestratorParticipant ? (
-              <div className="orchestrator-follow-strip">
-                <p>
-                  Orchestrator: <strong>{orchestratorParticipant.name}</strong>
-                </p>
-                {isConnected && canFollowCurrentOrchestrator() ? (
-                  <Button
-                    type="button"
-                    variant={isFollowingOrchestrator ? 'secondary' : 'ghost'}
-                    size="sm"
-                    className={`text-button compact follow-button${isFollowingOrchestrator ? ' active' : ''}`}
-                    onClick={followOrchestrator}
-                    disabled={isFollowingOrchestrator}
-                  >
-                    {isFollowingOrchestrator ? 'Following orchestrator' : 'Re-follow orchestrator'}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
-
-            <ul>
-              {participantsForDisplay.map((participant) => (
-                <li
-                  key={participant.id}
-                  className={participant.id === roomState.myId ? 'me' : ''}
-                  style={{ ['--user-hue' as string]: String(participant.colorHue) }}
-                >
-                  <div className="person">
-                    <span className={`participant-color${participant.id === roomState.orchestratorId ? ' orchestrator' : ''}`}>
-                      {participant.id === roomState.myId ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="color-swatch mini"
-                          aria-label="Get a new participant color"
-                          title="Get a new color"
-                          onClick={requestNewColor}
-                        />
-                      ) : (
-                        <span className="avatar-dot" aria-hidden="true" />
-                      )}
-                      {participant.id === roomState.orchestratorId ? (
-                        <span className="orchestrator-crown" aria-hidden="true">
-                          <svg viewBox="0 0 16 16" focusable="false">
-                            <path d="M2 12h12l-1-6-3 3-2-4-2 4-3-3z" fill="currentColor" />
-                          </svg>
-                        </span>
-                      ) : null}
-                    </span>
-
-                    {participant.id === roomState.myId && isProfileEditing ? (
-                      <Input
-                        ref={participantNameInputRef}
-                        className="participant-name-input"
-                        maxLength={40}
-                        value={nameInput}
-                        aria-label="Edit your display name"
-                        autoComplete="name"
-                        onBlur={() => {
-                          setIsProfileEditing(false)
-                          window.clearTimeout(profileSyncTimerRef.current)
-                          commitProfileName(true)
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Escape') {
-                            event.preventDefault()
-                            setNameInput(joinedName)
-                            ;(event.currentTarget as HTMLInputElement).blur()
-                            return
-                          }
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            window.clearTimeout(profileSyncTimerRef.current)
-                            commitProfileName(true)
-                            ;(event.currentTarget as HTMLInputElement).blur()
-                          }
-                        }}
-                        onChange={(event) => handleNameInput(event.currentTarget.value)}
-                      />
-                    ) : (
-                      <span>{participant.name}</span>
-                    )}
-
-                    <span
-                      className={`participant-follow-state${
-                        roomState.orchestratorId !== null && !participant.isOrchestrator && !participant.isFollowingOrchestrator
-                          ? ' manual'
-                          : ''
-                      }`}
-                    >
-                      {roomState.orchestratorId === null
-                        ? 'No orchestrator'
-                        : participant.isOrchestrator
-                          ? 'Orchestrator'
-                          : participant.isFollowingOrchestrator
-                            ? 'Following'
-                            : 'Not following'}
-                    </span>
-                  </div>
-
-                  <div className="participant-controls">
-                    {roomState.revealed ? <strong>{participant.vote ?? '-'}</strong> : <em>{participant.hasVoted ? 'Voted' : 'Waiting'}</em>}
-
-                    {participant.id === roomState.myId && !isProfileEditing ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="edit-name-button"
-                        aria-label="Edit your display name"
-                        title="Edit your display name"
-                        onClick={() => {
-                          if (!isConnected) {
-                            return
-                          }
-                          setNameInput(joinedName)
-                          setIsProfileEditing(true)
-                          setConnectionMessage('')
-                        }}
-                      >
-                        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                          <path
-                            d="M11.7 1.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-8.2 8.2-3.8.9.9-3.8zM2.5 14.5h11"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.4"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      </Button>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-
-            <section className="participant-vote-panel" aria-label="Estimation options">
-              <Button
-                type="button"
-                className="participant-action-button"
-                onClick={revealOrNextTicket}
-                disabled={!roomState.revealed && !canReveal}
-              >
-                {roomState.revealed ? 'Next ticket' : 'Reveal'}
-              </Button>
-
-              <div className="participant-vote-grid" role="group" aria-label="Vote cards">
-                {ESTIMATE_OPTIONS.map((option) => (
-                  <Button
-                    key={option}
-                    type="button"
-                    variant={roomState.myVote === option ? 'default' : 'secondary'}
-                    className={`vote-card participant-vote-card${roomState.myVote === option ? ' selected' : ''}`}
-                    onClick={() => setVote(option)}
-                  >
-                    {option}
-                  </Button>
-                ))}
-              </div>
-            </section>
-
-            {roomState.revealed ? (
-              <section className="participant-breakdown">
-                <h3>Revealed breakdown</h3>
-                <div className="breakdown-grid compact">
-                  {revealBuckets.map((bucket) => (
-                    <article className="estimate-group" key={bucket.estimate}>
-                      <h3>{bucket.estimate}</h3>
-                      <div className="badge-list">
-                        {bucket.voters.map((voter) => (
-                          <span key={voter.id} className="user-badge" style={{ ['--user-hue' as string]: String(voter.colorHue) }}>
-                            {voter.name}
-                          </span>
-                        ))}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            ) : null}
+            />
           </section>
 
-          <section className="jira-panel">
-            <div className="panel-heading">
-              <h2>Jira Tickets</h2>
-              <div className="jira-panel-actions">
-                <Link to="/dashboard" className={buttonVariants({ variant: 'secondary' })}>
-                  Open dashboard
-                </Link>
-              </div>
-            </div>
-
-            <p className="jira-config-note">
-              Jira credentials and session start are managed from the dashboard. Once started, tickets appear here for everyone.
-            </p>
-
-            {jiraError ? <p className="jira-error">{jiraError}</p> : jiraMessage ? <p className="jira-message">{jiraMessage}</p> : null}
-
-            {jiraIssues && quickFilterBadges.length > 0 ? (
-              <section className="quick-filter-panel" aria-label="Quick filters">
-                <div className="quick-filter-list">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={activeQuickFilterBadge ? 'ghost' : 'secondary'}
-                    className={`quick-filter-badge${activeQuickFilterBadge ? '' : ' active'}`}
-                    onClick={() => setActiveQuickFilterBadgeId(null)}
-                  >
-                    All tickets
-                  </Button>
-                  {quickFilterBadges.map((badge) => (
-                    <Button
-                      key={badge.id}
-                      type="button"
-                      size="sm"
-                      variant={activeQuickFilterBadgeId === badge.id ? 'secondary' : 'ghost'}
-                      className={`quick-filter-badge${activeQuickFilterBadgeId === badge.id ? ' active' : ''}`}
-                      onClick={() => setActiveQuickFilterBadgeId(badge.id)}
-                    >
-                      {badge.fieldLabel}: {badge.value} ({badge.count})
-                    </Button>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            <div
-              className="jira-list-scroll"
-              ref={(node) => {
-                jiraListScrollRef.current = node
+          {/* Right panel: Participants & voting */}
+          <section className="planning-panel">
+            <ParticipantsPanel
+              participants={participantsForDisplay}
+              myId={roomState.myId}
+              orchestratorId={roomState.orchestratorId}
+              revealed={roomState.revealed}
+              myVote={roomState.myVote}
+              canReveal={canReveal}
+              isFollowingOrchestrator={isFollowingOrchestrator}
+              canFollowOrchestrator={canFollowCurrentOrchestrator()}
+              isProfileEditing={isProfileEditing}
+              nameInput={nameInput}
+              joinedName={joinedName}
+              isConnected={isConnected}
+              orchestratorParticipant={orchestratorParticipant}
+              revealBuckets={revealBuckets}
+              participantNameInputRef={participantNameInputRef}
+              onRevealOrNext={revealOrNextTicket}
+              onVote={setVote}
+              onRequestNewColor={requestNewColor}
+              onFollowOrchestrator={followOrchestrator}
+              onStartEditing={() => {
+                if (!isConnected) return
+                setNameInput(joinedName)
+                setIsProfileEditing(true)
+                setConnectionMessage('')
               }}
-            >
-              {jiraIssues ? (
-                visibleJiraGroups.length > 0 ? (
-                  <div className="jira-buckets">
-                    {visibleJiraGroups.map((group) => (
-                      <article className="jira-bucket" key={group.id}>
-                        <h3>
-                          {group.name}
-                          <span>
-                            {jiraCategoryLabel(group.category)} - {formatJiraIssueCount(group.issues.length)}
-                          </span>
-                        </h3>
-                        <ul className="jira-list">
-                          {group.issues.map((issue) => (
-                            <li key={issue.id} className={selectedIssueId === issue.id ? 'selected' : ''}>
-                              <Button type="button" variant="ghost" className="jira-issue-select" onClick={() => selectIssue(issue, group)}>
-                                <div className="jira-issue-head">
-                                  <strong>{issue.key}</strong>
-                                  <Badge className="status-badge">{issue.status}</Badge>
-                                  {issue.isEstimated ? <Badge variant="success" className="estimated-badge">Estimated</Badge> : null}
-                                </div>
-                                <p>{issue.summary}</p>
-                              </Button>
-                            </li>
-                          ))}
-                        </ul>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="jira-empty">
-                    {activeQuickFilterBadge
-                      ? `No tickets match ${activeQuickFilterBadge.fieldLabel}: ${activeQuickFilterBadge.value}.`
-                      : 'No Jira tickets found for current/future sprints or backlog.'}
-                  </p>
-                )
-              ) : (
-                <p className="jira-empty">No Jira tickets loaded yet.</p>
-              )}
-            </div>
+              onStopEditing={() => {
+                setIsProfileEditing(false)
+                window.clearTimeout(profileSyncTimerRef.current)
+              }}
+              onNameChange={handleNameInput}
+              onNameSubmit={() => commitProfileName(true)}
+              onNameCancel={() => setNameInput(joinedName)}
+            />
           </section>
-        </section>
+        </div>
       )}
 
-      {connectionMessage ? <p className="message">{connectionMessage}</p> : null}
+      {connectionMessage && !isConnected ? null : connectionMessage ? (
+        <div
+          className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg border px-4 py-2 text-sm shadow-md"
+          style={{
+            background: 'var(--color-surface)',
+            borderColor: 'var(--color-border)',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
+          {connectionMessage}
+        </div>
+      ) : null}
     </main>
   )
 }
