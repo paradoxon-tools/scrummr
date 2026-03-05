@@ -5,6 +5,7 @@ Single-room scrum planning poker app built with Next.js + Convex.
 ## Features
 
 - Name-only login with local storage prefill and editable display name.
+- Per-user light/dark mode toggle stored in local browser preferences.
 - Real-time multi-user voting in one shared room.
 - Any participant can reveal estimates for everyone at once.
 - After reveal, the action button becomes `Next ticket` to reset the round.
