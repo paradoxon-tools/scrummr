@@ -3,6 +3,9 @@
 import { Show, SignInButton, useUser } from '@clerk/nextjs'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
+import { Button, buttonVariants } from '../../components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
+import { Input } from '../../components/ui/input'
 
 type JiraConfig = {
   baseUrl: string
@@ -176,114 +179,122 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="dashboard-shell">
+    <main className="dashboard-shell py-8">
       <Show when="signed-out">
-        <section className="panel dashboard-panel">
-          <p className="eyebrow">Facilitator Console</p>
-          <h1>Planning Dashboard</h1>
-          <p className="summary">Sign in with Clerk to configure Jira and start a planning session.</p>
-          <SignInButton>
-            <button type="button" className="primary">
-              Sign in to continue
-            </button>
-          </SignInButton>
-        </section>
+        <Card className="dashboard-panel border-neutral-200 shadow-sm">
+          <CardHeader className="pb-3">
+            <p className="eyebrow">Facilitator Console</p>
+            <CardTitle className="text-2xl">Planning Dashboard</CardTitle>
+            <CardDescription className="summary">Sign in with Clerk to configure Jira and start a planning session.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <SignInButton mode="modal">
+              <Button type="button">
+                Sign in to continue
+              </Button>
+            </SignInButton>
+          </CardContent>
+        </Card>
       </Show>
 
       <Show when="signed-in">
-        <section className="panel dashboard-panel">
-          <p className="eyebrow">Facilitator Console</p>
-          <h1>Planning Dashboard</h1>
-          <p className="summary">
-            Signed in as {user?.fullName || user?.primaryEmailAddress?.emailAddress || 'facilitator'}.
-          </p>
+        <Card className="dashboard-panel border-neutral-200 shadow-sm">
+          <CardHeader className="pb-3">
+            <p className="eyebrow">Facilitator Console</p>
+            <CardTitle className="text-2xl">Planning Dashboard</CardTitle>
+            <CardDescription className="summary">
+              Signed in as {user?.fullName || user?.primaryEmailAddress?.emailAddress || 'facilitator'}.
+            </CardDescription>
+          </CardHeader>
 
-          <form
-            className="jira-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void startPlanningSession()
-            }}
-          >
-            <label htmlFor="dashboard-jira-url">Jira URL</label>
-            <input
-              id="dashboard-jira-url"
-              placeholder="your-team.atlassian.net"
-              value={jiraConfig.baseUrl}
-              onChange={(event) => setJiraConfig((current) => ({ ...current, baseUrl: event.currentTarget.value }))}
-            />
+          <CardContent className="space-y-4">
+            <form
+              className="jira-form"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void startPlanningSession()
+              }}
+            >
+              <label htmlFor="dashboard-jira-url">Jira URL</label>
+              <Input
+                id="dashboard-jira-url"
+                placeholder="your-team.atlassian.net"
+                value={jiraConfig.baseUrl}
+                onChange={(event) => setJiraConfig((current) => ({ ...current, baseUrl: event.currentTarget.value }))}
+              />
 
-            <label htmlFor="dashboard-jira-email">Jira account email</label>
-            <input
-              id="dashboard-jira-email"
-              type="email"
-              placeholder="team.member@company.com"
-              value={jiraConfig.email}
-              onChange={(event) => setJiraConfig((current) => ({ ...current, email: event.currentTarget.value }))}
-            />
+              <label htmlFor="dashboard-jira-email">Jira account email</label>
+              <Input
+                id="dashboard-jira-email"
+                type="email"
+                placeholder="team.member@company.com"
+                value={jiraConfig.email}
+                onChange={(event) => setJiraConfig((current) => ({ ...current, email: event.currentTarget.value }))}
+              />
 
-            <label htmlFor="dashboard-jira-token">Jira API token</label>
-            <input
-              id="dashboard-jira-token"
-              type="password"
-              placeholder="Paste API token"
-              value={jiraConfig.apiToken}
-              onChange={(event) => setJiraConfig((current) => ({ ...current, apiToken: event.currentTarget.value }))}
-            />
+              <label htmlFor="dashboard-jira-token">Jira API token</label>
+              <Input
+                id="dashboard-jira-token"
+                type="password"
+                placeholder="Paste API token"
+                value={jiraConfig.apiToken}
+                onChange={(event) => setJiraConfig((current) => ({ ...current, apiToken: event.currentTarget.value }))}
+              />
 
-            <label htmlFor="dashboard-jira-prefix">Ticket prefix</label>
-            <input
-              id="dashboard-jira-prefix"
-              placeholder="TEAM"
-              value={jiraConfig.ticketPrefix}
-              onChange={(event) =>
-                setJiraConfig((current) => ({ ...current, ticketPrefix: normalizeTicketPrefix(event.currentTarget.value) }))
-              }
-            />
+              <label htmlFor="dashboard-jira-prefix">Ticket prefix</label>
+              <Input
+                id="dashboard-jira-prefix"
+                placeholder="TEAM"
+                value={jiraConfig.ticketPrefix}
+                onChange={(event) =>
+                  setJiraConfig((current) => ({ ...current, ticketPrefix: normalizeTicketPrefix(event.currentTarget.value) }))
+                }
+              />
 
-            <label htmlFor="dashboard-quick-filter-fields">Quick filter field IDs</label>
-            <input
-              id="dashboard-quick-filter-fields"
-              placeholder="customfield_12345, customfield_67890"
-              value={jiraConfig.quickFilterFieldIds}
-              onChange={(event) =>
-                setJiraConfig((current) => ({
-                  ...current,
-                  quickFilterFieldIds: event.currentTarget.value,
-                }))
-              }
-            />
+              <label htmlFor="dashboard-quick-filter-fields">Quick filter field IDs</label>
+              <Input
+                id="dashboard-quick-filter-fields"
+                placeholder="customfield_12345, customfield_67890"
+                value={jiraConfig.quickFilterFieldIds}
+                onChange={(event) =>
+                  setJiraConfig((current) => ({
+                    ...current,
+                    quickFilterFieldIds: event.currentTarget.value,
+                  }))
+                }
+              />
 
-            <div className="jira-actions">
-              <button type="submit" className="primary" disabled={isStartingSession}>
-                {isStartingSession ? 'Starting session...' : 'Start planning session'}
-              </button>
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => {
-                  setJiraConfig(createDefaultJiraConfig())
-                  setErrorMessage('')
-                  setSuccessMessage('')
-                  window.localStorage.removeItem(JIRA_STORAGE_KEY)
-                }}
-              >
-                Clear
-              </button>
+              <div className="jira-actions">
+                <Button type="submit" disabled={isStartingSession}>
+                  {isStartingSession ? 'Starting session...' : 'Start planning session'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setJiraConfig(createDefaultJiraConfig())
+                    setErrorMessage('')
+                    setSuccessMessage('')
+                    window.localStorage.removeItem(JIRA_STORAGE_KEY)
+                  }}
+                >
+                  Clear
+                </Button>
+              </div>
+            </form>
+
+            {errorMessage ? <p className="jira-error">{errorMessage}</p> : null}
+            {successMessage ? <p className="jira-message">{successMessage}</p> : null}
+
+            <div className="dashboard-actions">
+              <Link href="/" className={buttonVariants({ variant: 'secondary' })}>
+                Open planning room
+              </Link>
             </div>
-          </form>
 
-          {errorMessage ? <p className="jira-error">{errorMessage}</p> : null}
-          {successMessage ? <p className="jira-message">{successMessage}</p> : null}
-
-          <div className="dashboard-actions">
-            <Link href="/" className="secondary button-link">
-              Open planning room
-            </Link>
-          </div>
-
-          <p className="jira-config-note">Share this URL with participants: {planningRoomUrl}</p>
-        </section>
+            <p className="jira-config-note">Share this URL with participants: {planningRoomUrl}</p>
+          </CardContent>
+        </Card>
       </Show>
     </main>
   )

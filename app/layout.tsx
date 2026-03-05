@@ -1,9 +1,21 @@
 import type { Metadata } from 'next'
 import type { ReactNode } from 'react'
 import Link from 'next/link'
+import { Geist, Geist_Mono } from 'next/font/google'
 import { ClerkProvider, Show, SignInButton, SignUpButton, UserButton } from '@clerk/nextjs'
+import { Button, buttonVariants } from '../components/ui/button'
 import ThemeToggle from '../components/ThemeToggle'
 import '../src/app.css'
+
+const geistSans = Geist({
+  subsets: ['latin'],
+  variable: '--font-geist-sans',
+})
+
+const geistMono = Geist_Mono({
+  subsets: ['latin'],
+  variable: '--font-geist-mono',
+})
 
 export const metadata: Metadata = {
   title: 'Scrummer',
@@ -17,37 +29,39 @@ type RootLayoutProps = {
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="en">
-      <body>
+      <body className={`${geistSans.variable} ${geistMono.variable} min-h-screen bg-neutral-50 text-neutral-900 antialiased`}>
         <ClerkProvider>
-          <header
-            style={{
-              display: 'flex',
-              gap: '0.75rem',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '0.75rem 1rem',
-            }}
-          >
-            <nav style={{ display: 'inline-flex', gap: '0.6rem', alignItems: 'center' }}>
-              <Link href="/" className="text-button button-link" style={{ padding: '0.42rem 0.62rem', borderStyle: 'solid' }}>
-                Planning room
-              </Link>
-              <Link href="/dashboard" className="secondary button-link" style={{ padding: '0.42rem 0.62rem' }}>
-                Dashboard
-              </Link>
-            </nav>
-            <div style={{ display: 'inline-flex', gap: '0.75rem', alignItems: 'center' }}>
-              <ThemeToggle />
-              <Show when="signed-out">
-                <SignInButton />
-                <SignUpButton />
-              </Show>
-              <Show when="signed-in">
-                <UserButton />
-              </Show>
+          <header className="sticky top-0 z-40 border-b border-neutral-200/80 bg-white/85 backdrop-blur">
+            <div className="mx-auto flex h-14 w-full max-w-[1400px] items-center justify-between px-4">
+              <nav className="inline-flex items-center gap-2">
+                <Link href="/" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+                  Planning room
+                </Link>
+                <Link href="/dashboard" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+                  Dashboard
+                </Link>
+              </nav>
+              <div className="inline-flex items-center gap-2">
+                <ThemeToggle />
+                <Show when="signed-out">
+                  <SignInButton mode="modal">
+                    <Button variant="ghost" size="sm" type="button">
+                      Sign in
+                    </Button>
+                  </SignInButton>
+                  <SignUpButton mode="modal">
+                    <Button size="sm" type="button">
+                      Sign up
+                    </Button>
+                  </SignUpButton>
+                </Show>
+                <Show when="signed-in">
+                  <UserButton />
+                </Show>
+              </div>
             </div>
           </header>
-          {children}
+          <main className="mx-auto w-full max-w-[1400px]">{children}</main>
         </ClerkProvider>
       </body>
     </html>

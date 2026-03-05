@@ -29,11 +29,16 @@
     "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.16",
+    "@tailwindcss/postcss": "^4.2.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "codemirror": "^6.0.2",
     "convex": "^1.32.0",
     "next": "^16.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.1",
     "y-codemirror.next": "^0.3.5",
     "yjs": "^13.6.29"
   }

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Button } from './ui/button'
 
 type ThemeMode = 'light' | 'dark'
 
@@ -37,8 +38,8 @@ export default function ThemeToggle() {
   }
 
   return (
-    <button type="button" className="text-button theme-toggle" onClick={toggleThemeMode}>
+    <Button type="button" variant="ghost" size="sm" className="theme-toggle" onClick={toggleThemeMode}>
       {themeMode === 'dark' ? 'Use light mode' : 'Use dark mode'}
-    </button>
+    </Button>
   )
 }

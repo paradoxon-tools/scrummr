@@ -4,6 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import * as Y from 'yjs'
 import CodeMirrorField from '../components/CodeMirrorField'
+import { Badge } from '../components/ui/badge'
+import { Button, buttonVariants } from '../components/ui/button'
+import { Card } from '../components/ui/card'
+import { Input } from '../components/ui/input'
 import { createRoomConnection, type RoomConnection } from '../src/lib/roomConnection'
 import {
   ESTIMATE_OPTIONS,
@@ -1990,7 +1994,7 @@ export default function HomePage() {
       </header>
 
       {!isConnected ? (
-        <section className="join-view panel">
+        <Card className="join-view panel border-neutral-200 bg-white shadow-sm">
           <h2>Join planning room</h2>
           <p>
             {isSocketConnected
@@ -2005,7 +2009,7 @@ export default function HomePage() {
             }}
           >
             <label htmlFor="join-display-name">Display name</label>
-            <input
+            <Input
               id="join-display-name"
               maxLength={40}
               value={nameInput}
@@ -2013,14 +2017,14 @@ export default function HomePage() {
               autoComplete="name"
               onChange={(event) => handleNameInput(event.currentTarget.value)}
             />
-            <button type="submit" className="primary" disabled={isConnecting}>
+            <Button type="submit" disabled={isConnecting}>
               {isConnecting ? 'Connecting...' : isSocketConnected ? 'Waiting for session...' : 'Join'}
-            </button>
+            </Button>
           </form>
           <p className="jira-config-note">
             Facilitator? Open the <Link href="/dashboard">dashboard</Link> to connect Jira and start the session.
           </p>
-        </section>
+        </Card>
       ) : (
         <section className="workspace">
           <div
@@ -2050,12 +2054,12 @@ export default function HomePage() {
                       <strong>{selectedIssueKey}</strong>
                     </div>
                     <div className="issue-header-actions">
-                      <button type="button" className="text-button compact" onClick={() => setIsRawTicketDataOpen((value) => !value)}>
+                      <Button type="button" variant="ghost" size="sm" className="text-button compact" onClick={() => setIsRawTicketDataOpen((value) => !value)}>
                         {isRawTicketDataOpen ? 'Hide raw data' : 'View raw data'}
-                      </button>
-                      <button type="button" className="text-button compact" onClick={() => setIsCrdtDebugOpen((value) => !value)}>
+                      </Button>
+                      <Button type="button" variant="ghost" size="sm" className="text-button compact" onClick={() => setIsCrdtDebugOpen((value) => !value)}>
                         {isCrdtDebugOpen ? 'Hide CRDT debug' : 'CRDT debug'}
-                      </button>
+                      </Button>
                       {selectedIssueDraft?.issueUrl ? (
                         <a href={selectedIssueDraft.issueUrl} target="_blank" rel="noreferrer">
                           Open in Jira
@@ -2200,7 +2204,7 @@ export default function HomePage() {
                     )}
 
                     <div className="subtask-add">
-                      <input
+                      <Input
                         value={newSubtaskTitle}
                         placeholder="Add subtask title"
                         onChange={(event) => setNewSubtaskTitle(event.currentTarget.value)}
@@ -2211,9 +2215,9 @@ export default function HomePage() {
                           }
                         }}
                       />
-                      <button type="button" className="secondary" onClick={addIssueSubtask}>
+                      <Button type="button" variant="secondary" onClick={addIssueSubtask}>
                         Add
-                      </button>
+                      </Button>
                     </div>
                   </section>
                 </>
@@ -2247,14 +2251,16 @@ export default function HomePage() {
                   Orchestrator: <strong>{orchestratorParticipant.name}</strong>
                 </p>
                 {isConnected && canFollowCurrentOrchestrator() ? (
-                  <button
+                  <Button
                     type="button"
+                    variant={isFollowingOrchestrator ? 'secondary' : 'ghost'}
+                    size="sm"
                     className={`text-button compact follow-button${isFollowingOrchestrator ? ' active' : ''}`}
                     onClick={followOrchestrator}
                     disabled={isFollowingOrchestrator}
                   >
                     {isFollowingOrchestrator ? 'Following orchestrator' : 'Re-follow orchestrator'}
-                  </button>
+                  </Button>
                 ) : null}
               </div>
             ) : null}
@@ -2269,8 +2275,10 @@ export default function HomePage() {
                   <div className="person">
                     <span className={`participant-color${participant.id === roomState.orchestratorId ? ' orchestrator' : ''}`}>
                       {participant.id === roomState.myId ? (
-                        <button
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="icon"
                           className="color-swatch mini"
                           aria-label="Get a new participant color"
                           title="Get a new color"
@@ -2289,7 +2297,7 @@ export default function HomePage() {
                     </span>
 
                     {participant.id === roomState.myId && isProfileEditing ? (
-                      <input
+                      <Input
                         ref={participantNameInputRef}
                         className="participant-name-input"
                         maxLength={40}
@@ -2342,8 +2350,10 @@ export default function HomePage() {
                     {roomState.revealed ? <strong>{participant.vote ?? '-'}</strong> : <em>{participant.hasVoted ? 'Voted' : 'Waiting'}</em>}
 
                     {participant.id === roomState.myId && !isProfileEditing ? (
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon"
                         className="edit-name-button"
                         aria-label="Edit your display name"
                         title="Edit your display name"
@@ -2366,7 +2376,7 @@ export default function HomePage() {
                             strokeLinejoin="round"
                           />
                         </svg>
-                      </button>
+                      </Button>
                     ) : null}
                   </div>
                 </li>
@@ -2374,25 +2384,26 @@ export default function HomePage() {
             </ul>
 
             <section className="participant-vote-panel" aria-label="Estimation options">
-              <button
+              <Button
                 type="button"
-                className="primary participant-action-button"
+                className="participant-action-button"
                 onClick={revealOrNextTicket}
                 disabled={!roomState.revealed && !canReveal}
               >
                 {roomState.revealed ? 'Next ticket' : 'Reveal'}
-              </button>
+              </Button>
 
               <div className="participant-vote-grid" role="group" aria-label="Vote cards">
                 {ESTIMATE_OPTIONS.map((option) => (
-                  <button
+                  <Button
                     key={option}
                     type="button"
+                    variant={roomState.myVote === option ? 'default' : 'secondary'}
                     className={`vote-card participant-vote-card${roomState.myVote === option ? ' selected' : ''}`}
                     onClick={() => setVote(option)}
                   >
                     {option}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </section>
@@ -2422,7 +2433,7 @@ export default function HomePage() {
             <div className="panel-heading">
               <h2>Jira Tickets</h2>
               <div className="jira-panel-actions">
-                <Link href="/dashboard" className="secondary button-link">
+                <Link href="/dashboard" className={buttonVariants({ variant: 'secondary' })}>
                   Open dashboard
                 </Link>
               </div>
@@ -2437,22 +2448,26 @@ export default function HomePage() {
             {jiraIssues && quickFilterBadges.length > 0 ? (
               <section className="quick-filter-panel" aria-label="Quick filters">
                 <div className="quick-filter-list">
-                  <button
+                  <Button
                     type="button"
+                    size="sm"
+                    variant={activeQuickFilterBadge ? 'ghost' : 'secondary'}
                     className={`quick-filter-badge${activeQuickFilterBadge ? '' : ' active'}`}
                     onClick={() => setActiveQuickFilterBadgeId(null)}
                   >
                     All tickets
-                  </button>
+                  </Button>
                   {quickFilterBadges.map((badge) => (
-                    <button
+                    <Button
                       key={badge.id}
                       type="button"
+                      size="sm"
+                      variant={activeQuickFilterBadgeId === badge.id ? 'secondary' : 'ghost'}
                       className={`quick-filter-badge${activeQuickFilterBadgeId === badge.id ? ' active' : ''}`}
                       onClick={() => setActiveQuickFilterBadgeId(badge.id)}
                     >
                       {badge.fieldLabel}: {badge.value} ({badge.count})
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </section>
@@ -2478,14 +2493,14 @@ export default function HomePage() {
                         <ul className="jira-list">
                           {group.issues.map((issue) => (
                             <li key={issue.id} className={selectedIssueId === issue.id ? 'selected' : ''}>
-                              <button type="button" className="jira-issue-select" onClick={() => selectIssue(issue, group)}>
+                              <Button type="button" variant="ghost" className="jira-issue-select" onClick={() => selectIssue(issue, group)}>
                                 <div className="jira-issue-head">
                                   <strong>{issue.key}</strong>
-                                  <span className="status-badge">{issue.status}</span>
-                                  {issue.isEstimated ? <span className="estimated-badge">Estimated</span> : null}
+                                  <Badge className="status-badge">{issue.status}</Badge>
+                                  {issue.isEstimated ? <Badge variant="success" className="estimated-badge">Estimated</Badge> : null}
                                 </div>
                                 <p>{issue.summary}</p>
-                              </button>
+                              </Button>
                             </li>
                           ))}
                         </ul>
