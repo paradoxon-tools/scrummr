@@ -21,6 +21,7 @@ const issueDraftSnapshot = v.object({
   issueKey: v.string(),
   issueUrl: v.string(),
   fields: v.array(issueEditorField),
+  subtasks: v.optional(v.array(issueSubtask)),
   updatedBy: v.union(v.string(), v.null()),
   updatedAt: v.string(),
 });
@@ -84,28 +85,29 @@ export default defineSchema({
     colorHue: v.number(),
     vote: v.union(v.string(), v.null()),
     isFollowingOrchestrator: v.boolean(),
-    lastSeenAt: v.number(),
+    lastSeenAt: v.optional(v.number()),
   }).index("by_client_id", ["clientId"]),
 
   rooms: defineTable({
     revealed: v.boolean(),
     selectedIssueId: v.union(v.string(), v.null()),
     orchestratorId: v.union(v.string(), v.null()),
-    settings: v.object({
+    settings: v.optional(v.object({
       allowParticipantEditingOutsideFocus: v.boolean(),
-    }),
-    orchestratorView: v.object({
+    })),
+    orchestratorView: v.optional(v.object({
       issueId: v.union(v.string(), v.null()),
       targetId: v.union(v.string(), v.null()),
       scrollTop: v.number(),
-    }),
-    issueDrafts: v.array(issueDraftSnapshot),
-    issueSubtasks: v.array(issueSubtasksSnapshot),
-    issueSync: v.array(issueSyncSnapshot),
-    issueCrdt: v.array(issueCrdtSnapshot),
-    issuePresence: v.array(issuePresenceSnapshot),
+    })),
+    issueDrafts: v.optional(v.array(issueDraftSnapshot)),
+    issueSubtasks: v.optional(v.array(issueSubtasksSnapshot)),
+    issueSync: v.optional(v.array(issueSyncSnapshot)),
+    issueCrdt: v.optional(v.array(issueCrdtSnapshot)),
+    issuePresence: v.optional(v.array(issuePresenceSnapshot)),
     jiraIssues: v.union(v.any(), v.null()),
-    jiraConnection: v.union(jiraConnectionSnapshot, v.null()),
-    estimatedIssueIds: v.array(v.string()),
+    jiraSubtasksByIssueId: v.optional(v.record(v.string(), v.array(issueSubtask))),
+    jiraConnection: v.optional(v.union(jiraConnectionSnapshot, v.null())),
+    estimatedIssueIds: v.optional(v.array(v.string())),
   }),
 });
