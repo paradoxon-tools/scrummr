@@ -421,6 +421,15 @@ const jiraRequestHeaders = (authorization: string): Record<string, string> => ({
   "Content-Type": "application/json",
 });
 
+const encodeBase64 = (value: string): string => {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+};
+
 const toDateMs = (value: string | null): number => {
   if (!value) {
     return Number.POSITIVE_INFINITY;
@@ -483,7 +492,7 @@ const fetchAllSearchIssues = async (
   jql: string,
   quickFilterFieldIds: string[],
 ): Promise<{ ok: true; issues: JiraIssueWithSprint[] } | JiraActionError> => {
-  let startAt = 0;
+  let nextPageToken: string | null = null;
   let page = 0;
   const issues: JiraIssueWithSprint[] = [];
 
@@ -491,14 +500,14 @@ const fetchAllSearchIssues = async (
     let response: Response;
     let payload: unknown;
     try {
-      response = await fetch(`${jiraOrigin}/rest/api/3/search`, {
+      response = await fetch(`${jiraOrigin}/rest/api/3/search/jql`, {
         method: "POST",
         headers: jiraRequestHeaders(authorization),
         body: JSON.stringify({
           jql,
-          startAt,
           maxResults: jiraPageSize,
           fields: ["*all"],
+          ...(nextPageToken ? { nextPageToken } : {}),
         }),
       });
 
@@ -522,18 +531,16 @@ const fetchAllSearchIssues = async (
 
     issues.push(...pageIssues);
 
-    const total = isRecord(payload) && typeof payload.total === "number" ? payload.total : null;
+    const returnedNextPageToken = isRecord(payload) && typeof payload.nextPageToken === "string" ? payload.nextPageToken : null;
+    const isLastPage = isRecord(payload) && payload.isLast === true;
     if (pageIssues.length === 0) {
       break;
     }
-    if (total !== null && startAt + jiraPageSize >= total) {
-      break;
-    }
-    if (total === null && pageIssues.length < jiraPageSize) {
+    if (isLastPage || !returnedNextPageToken) {
       break;
     }
 
-    startAt += jiraPageSize;
+    nextPageToken = returnedNextPageToken;
     page += 1;
   }
 
@@ -652,7 +659,11 @@ export const loadIssues = action({
   handler: async (ctx, args): Promise<{ ok: true; jiraIssues: JiraIssueResult } | JiraActionError> => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      return { ok: false, message: "You must be signed in to start a planning session." };
+      return {
+        ok: false,
+        message:
+          "You are signed into the UI, but Convex did not receive a Clerk token. Configure Clerk JWT template 'convex' and verify CLERK_JWT_ISSUER_DOMAIN in Convex.",
+      };
     }
 
     const jiraOrigin = normalizeJiraOrigin(args.baseUrl);
@@ -665,7 +676,7 @@ export const loadIssues = action({
       return { ok: false, message: "Jira URL, email, API token, and ticket prefix are required." };
     }
 
-    const authorization = Buffer.from(`${email}:${apiToken}`).toString("base64");
+    const authorization = encodeBase64(`${email}:${apiToken}`);
     const projectClause = `project = "${ticketPrefix}"`;
     const currentSprintJql = `${projectClause} AND sprint in openSprints() ORDER BY Rank ASC, created ASC`;
     const nextSprintJql = `${projectClause} AND sprint in futureSprints() ORDER BY Rank ASC, created ASC`;
@@ -811,7 +822,7 @@ export const syncIssueField = action({
       };
     }
 
-    const authorization = Buffer.from(`${email}:${apiToken}`).toString("base64");
+    const authorization = encodeBase64(`${email}:${apiToken}`);
     let response: Response;
     let payload: unknown;
 

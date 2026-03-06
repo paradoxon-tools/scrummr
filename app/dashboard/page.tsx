@@ -2,7 +2,7 @@
 
 import { useUser } from '@clerk/tanstack-react-start'
 import { Link } from '@tanstack/react-router'
-import { useAction } from 'convex/react'
+import { useAction, useConvexAuth } from 'convex/react'
 import { useEffect, useState } from 'react'
 import { api } from '../../convex/_generated/api.js'
 import { Button, buttonVariants } from '../../components/ui/button'
@@ -23,6 +23,29 @@ type JiraIssueResult = {
 }
 
 const JIRA_STORAGE_KEY = 'scrummer.jira_config'
+
+const convexBackendUrl =
+  import.meta.env.VITE_CONVEX_URL?.trim() ||
+  import.meta.env.NEXT_PUBLIC_CONVEX_URL?.trim() ||
+  ''
+
+const toBackendActionErrorMessage = (error: unknown): string => {
+  if (!convexBackendUrl) {
+    return 'Set VITE_CONVEX_URL to connect to the Jira backend.'
+  }
+
+  if (error instanceof Error) {
+    const message = error.message.trim()
+    if (message) {
+      if (/failed to fetch|networkerror|load failed/i.test(message)) {
+        return 'Could not reach the Jira backend endpoint. Ensure Convex is running and reachable from VITE_CONVEX_URL.'
+      }
+      return `Jira backend request failed: ${message}`
+    }
+  }
+
+  return 'Could not reach the Jira backend endpoint.'
+}
 
 const createDefaultJiraConfig = (): JiraConfig => ({
   baseUrl: '',
@@ -117,6 +140,7 @@ const parseIssueCount = (payload: unknown): number => {
 
 export default function DashboardPage() {
   const loadJiraIssuesAction = useAction(api.jira.loadIssues)
+  const { isLoading: isConvexAuthLoading, isAuthenticated: isConvexAuthenticated } = useConvexAuth()
   const { user, isSignedIn } = useUser()
   const [jiraConfig, setJiraConfig] = useState<JiraConfig>(createDefaultJiraConfig)
   const [isStartingSession, setIsStartingSession] = useState(false)
@@ -139,6 +163,26 @@ export default function DashboardPage() {
 
     if (!normalized.baseUrl || !normalized.email || !normalized.apiToken || !normalized.ticketPrefix) {
       setErrorMessage('Add Jira URL, email, API token, and ticket prefix before starting a session.')
+      setSuccessMessage('')
+      return
+    }
+
+    if (!convexBackendUrl) {
+      setErrorMessage('Set VITE_CONVEX_URL to connect to the Jira backend.')
+      setSuccessMessage('')
+      return
+    }
+
+    if (isConvexAuthLoading) {
+      setErrorMessage('Still establishing authenticated backend session. Try again in a moment.')
+      setSuccessMessage('')
+      return
+    }
+
+    if (!isConvexAuthenticated) {
+      setErrorMessage(
+        "Signed in to Clerk, but backend auth is not available. Activate Clerk's Convex integration and confirm CLERK_JWT_ISSUER_DOMAIN in Convex.",
+      )
       setSuccessMessage('')
       return
     }
@@ -167,8 +211,8 @@ export default function DashboardPage() {
           ? `Session started with ${ticketCount} Jira tickets. Participants can now join the planning room.`
           : 'Session started. No Jira tickets matched your filters, but participants can now join.',
       )
-    } catch {
-      setErrorMessage('Could not reach the Jira backend endpoint.')
+    } catch (error: unknown) {
+      setErrorMessage(toBackendActionErrorMessage(error))
     } finally {
       setIsStartingSession(false)
     }
@@ -253,7 +297,10 @@ export default function DashboardPage() {
                     id="dashboard-jira-url"
                     placeholder="your-team.atlassian.net"
                     value={jiraConfig.baseUrl}
-                    onChange={(event) => setJiraConfig((current) => ({ ...current, baseUrl: event.currentTarget.value }))}
+                    onChange={(event) => {
+                      const nextBaseUrl = event.currentTarget.value
+                      setJiraConfig((current) => ({ ...current, baseUrl: nextBaseUrl }))
+                    }}
                   />
                 </div>
 
@@ -270,7 +317,10 @@ export default function DashboardPage() {
                     type="email"
                     placeholder="team.member@company.com"
                     value={jiraConfig.email}
-                    onChange={(event) => setJiraConfig((current) => ({ ...current, email: event.currentTarget.value }))}
+                    onChange={(event) => {
+                      const nextEmail = event.currentTarget.value
+                      setJiraConfig((current) => ({ ...current, email: nextEmail }))
+                    }}
                   />
                 </div>
 
@@ -287,7 +337,10 @@ export default function DashboardPage() {
                     type="password"
                     placeholder="Paste API token"
                     value={jiraConfig.apiToken}
-                    onChange={(event) => setJiraConfig((current) => ({ ...current, apiToken: event.currentTarget.value }))}
+                    onChange={(event) => {
+                      const nextApiToken = event.currentTarget.value
+                      setJiraConfig((current) => ({ ...current, apiToken: nextApiToken }))
+                    }}
                   />
                 </div>
 
@@ -304,9 +357,10 @@ export default function DashboardPage() {
                       id="dashboard-jira-prefix"
                       placeholder="TEAM"
                       value={jiraConfig.ticketPrefix}
-                      onChange={(event) =>
-                        setJiraConfig((current) => ({ ...current, ticketPrefix: normalizeTicketPrefix(event.currentTarget.value) }))
-                      }
+                      onChange={(event) => {
+                        const nextTicketPrefix = normalizeTicketPrefix(event.currentTarget.value)
+                        setJiraConfig((current) => ({ ...current, ticketPrefix: nextTicketPrefix }))
+                      }}
                     />
                   </div>
                   <div className="space-y-1">
@@ -321,12 +375,13 @@ export default function DashboardPage() {
                       id="dashboard-quick-filter-fields"
                       placeholder="customfield_12345"
                       value={jiraConfig.quickFilterFieldIds}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        const nextQuickFilterFieldIds = event.currentTarget.value
                         setJiraConfig((current) => ({
                           ...current,
-                          quickFilterFieldIds: event.currentTarget.value,
+                          quickFilterFieldIds: nextQuickFilterFieldIds,
                         }))
-                      }
+                      }}
                     />
                   </div>
                 </div>

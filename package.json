@@ -6,6 +6,7 @@
   "packageManager": "bun@1.3.6",
   "scripts": {
     "dev": "concurrently -n web,convex -c blue,magenta \"vite dev --port 5173\" \"bunx convex dev\"",
+    "dev:all": "bunx convex dev --once && bun run dev",
     "dev:web": "vite dev --port 5173",
     "dev:convex": "bunx convex dev",
     "build": "vite build",
