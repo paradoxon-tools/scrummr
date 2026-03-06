@@ -13,11 +13,13 @@ type CodeMirrorFieldProps = {
   minRows?: number
   placeholder?: string
   busy?: boolean
+  readOnly?: boolean
   markdownMode?: boolean
   yText?: Y.Text | null
   onInput?: (value: string) => void
   onFocus?: () => void
   onBlur?: () => void
+  onActivity?: () => void
 }
 
 const createClassName = (busy: boolean): string => (busy ? 'code-field busy' : 'code-field')
@@ -27,11 +29,13 @@ export default function CodeMirrorField({
   minRows = 3,
   placeholder = '',
   busy = false,
+  readOnly = false,
   markdownMode = false,
   yText = null,
   onInput,
   onFocus,
   onBlur,
+  onActivity,
 }: CodeMirrorFieldProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -40,10 +44,12 @@ export default function CodeMirrorField({
   const placeholderCompartmentRef = useRef(new Compartment())
   const languageCompartmentRef = useRef(new Compartment())
   const collabCompartmentRef = useRef(new Compartment())
+  const editableCompartmentRef = useRef(new Compartment())
 
   const placeholderExtension = (): Extension => (placeholder ? editorPlaceholder(placeholder) : [])
   const languageExtension = (): Extension => (markdownMode ? markdown() : [])
   const collabExtension = (): Extension => (yText ? yCollab(yText, undefined) : [])
+  const editableExtension = (): Extension => EditorState.readOnly.of(readOnly)
 
   useEffect(() => {
     if (!rootRef.current) {
@@ -61,7 +67,12 @@ export default function CodeMirrorField({
           placeholderCompartmentRef.current.of(placeholderExtension()),
           languageCompartmentRef.current.of(languageExtension()),
           collabCompartmentRef.current.of(collabExtension()),
+          editableCompartmentRef.current.of(editableExtension()),
           EditorView.updateListener.of((update) => {
+            if (update.docChanged) {
+              onActivity?.()
+            }
+
             if (!update.docChanged || applyingExternalRef.current || yText) {
               return
             }
@@ -71,10 +82,23 @@ export default function CodeMirrorField({
           EditorView.domEventHandlers({
             focus: () => {
               onFocus?.()
+              onActivity?.()
               return false
             },
             blur: () => {
               onBlur?.()
+              return false
+            },
+            keydown: () => {
+              onActivity?.()
+              return false
+            },
+            mousedown: () => {
+              onActivity?.()
+              return false
+            },
+            click: () => {
+              onActivity?.()
               return false
             },
           }),
@@ -114,7 +138,8 @@ export default function CodeMirrorField({
     view.dispatch({ effects: placeholderCompartmentRef.current.reconfigure(placeholderExtension()) })
     view.dispatch({ effects: languageCompartmentRef.current.reconfigure(languageExtension()) })
     view.dispatch({ effects: collabCompartmentRef.current.reconfigure(collabExtension()) })
-  }, [value, placeholder, markdownMode, yText])
+    view.dispatch({ effects: editableCompartmentRef.current.reconfigure(editableExtension()) })
+  }, [value, placeholder, markdownMode, readOnly, yText])
 
   return (
     <div

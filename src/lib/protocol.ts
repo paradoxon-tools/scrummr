@@ -76,12 +76,41 @@ export type IssueSubtask = {
   done: boolean
 }
 
+export type RoomSettingsSnapshot = {
+  allowParticipantEditingOutsideFocus: boolean
+}
+
+export type IssueFieldSyncStatus = 'clean' | 'dirty' | 'syncing' | 'failed'
+
+export type IssueFieldSyncSnapshot = {
+  fieldId: string
+  label: string
+  value: string
+  status: IssueFieldSyncStatus
+  retryCount: number
+  nextRetryAt: string | null
+  lastAttemptAt: string | null
+  lastSyncedAt: string | null
+  failureMessage: string | null
+}
+
+export type IssueSyncSnapshot = {
+  issueId: string
+  issueKey: string
+  issueUrl: string
+  fields: IssueFieldSyncSnapshot[]
+}
+
+export type IssueSubtasksSnapshot = {
+  issueId: string
+  subtasks: IssueSubtask[]
+}
+
 export type IssueDraftSnapshot = {
   issueId: string
   issueKey: string
   issueUrl: string
   fields: IssueEditorField[]
-  subtasks: IssueSubtask[]
   updatedBy: string | null
   updatedAt: string
 }
@@ -106,6 +135,8 @@ export type IssuePresenceSnapshot = {
 export type IssueWorkspaceSnapshot = {
   selectedIssueId: string | null
   drafts: IssueDraftSnapshot[]
+  subtasks: IssueSubtasksSnapshot[]
+  sync: IssueSyncSnapshot[]
   presence: IssuePresenceSnapshot[]
   crdt: IssueCrdtSnapshot[]
 }
@@ -165,6 +196,10 @@ export type ClientEvent =
       subtaskId: string
     }
   | {
+      type: 'set_room_settings'
+      settings: Partial<RoomSettingsSnapshot>
+    }
+  | {
       type: 'set_issue_presence'
       issueId: string
       targetId: string
@@ -180,6 +215,7 @@ export type ClientEvent =
       type: 'set_follow_orchestrator'
       following: boolean
     }
+  | { type: 'heartbeat' }
 
 export type ParticipantView = {
   id: string
@@ -196,6 +232,7 @@ export type RoomStateSnapshot = {
   myId: string
   myVote: EstimateOption | null
   orchestratorId: string | null
+  settings: RoomSettingsSnapshot
   orchestratorView: OrchestratorViewSnapshot
   participants: ParticipantView[]
   issueWorkspace: IssueWorkspaceSnapshot

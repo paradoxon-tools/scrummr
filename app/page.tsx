@@ -15,6 +15,8 @@ import {
   type EstimateOption,
   type IssueDraftSnapshot,
   type IssueEditorField,
+  type IssueFieldSyncSnapshot,
+  type IssueSubtask,
   type JiraIssue,
   type JiraIssueCategory,
   type JiraIssueGroup,
@@ -29,6 +31,8 @@ type JiraConfig = {
   apiToken: string
   ticketPrefix: string
 }
+
+type StoredJiraConfig = Pick<JiraConfig, 'baseUrl' | 'ticketPrefix'>
 
 type IssueFieldDoc = {
   issueId: string
@@ -46,10 +50,14 @@ const SESSION_JOIN_RETRY_DELAY_MS = 1500
 const CRDT_REMOTE_ORIGIN = Symbol('crdt-remote')
 const CRDT_BOOTSTRAP_ORIGIN = Symbol('crdt-bootstrap')
 const ORCHESTRATOR_SCROLL_SYNC_DELAY_MS = 90
+const PARTICIPANT_HEARTBEAT_INTERVAL_MS = 15_000
+const INACTIVITY_UNFOCUS_DELAY_MS = 30_000
 
 const createEmptyIssueWorkspace = (): RoomStateSnapshot['issueWorkspace'] => ({
   selectedIssueId: null,
   drafts: [],
+  subtasks: [],
+  sync: [],
   presence: [],
   crdt: [],
 })
@@ -65,6 +73,9 @@ const createEmptyState = (): RoomStateSnapshot => ({
   myId: '',
   myVote: null,
   orchestratorId: null,
+  settings: {
+    allowParticipantEditingOutsideFocus: true,
+  },
   orchestratorView: createEmptyOrchestratorView(),
   participants: [],
   issueWorkspace: createEmptyIssueWorkspace(),
@@ -85,9 +96,6 @@ const normalizeIssueId = (value: string): string => value.trim().slice(0, 80)
 const normalizeIssueKey = (value: string): string => value.trim().toUpperCase().slice(0, 40)
 
 const normalizeTicketPrefix = (value: string): string => value.toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 20)
-
-const hasJiraSyncConfig = (value: JiraConfig): boolean =>
-  value.baseUrl.trim() !== '' && value.email.trim() !== '' && value.apiToken.trim() !== ''
 
 const normalizeEditorText = (value: string, maxLength = 16000): string => value.replace(/\r\n/g, '\n').slice(0, maxLength)
 const normalizeEditorFieldId = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 80)
@@ -493,6 +501,10 @@ export default function HomePage() {
   const middleScrollRef = useRef<HTMLElement | null>(null)
   const jiraListScrollRef = useRef<HTMLElement | null>(null)
   const participantNameInputRef = useRef<HTMLInputElement | null>(null)
+  const heartbeatTimerRef = useRef<number | undefined>(undefined)
+  const inactivityTimerRef = useRef<number | undefined>(undefined)
+  const lastActivityAtRef = useRef(Date.now())
+  const lastManualScrollAtRef = useRef<number | null>(null)
 
   useEffect(() => {
     roomStateRef.current = roomState
@@ -954,6 +966,39 @@ export default function HomePage() {
     activeElement.blur()
   }
 
+  const clearInactivityTimer = (): void => {
+    window.clearTimeout(inactivityTimerRef.current)
+    inactivityTimerRef.current = undefined
+  }
+
+  const handleParticipantInactivity = (): void => {
+    inactivityTimerRef.current = undefined
+    blurActiveTicketField()
+
+    if (!canFollowCurrentOrchestrator()) {
+      return
+    }
+
+    const lastManualScrollAt = lastManualScrollAtRef.current
+    if (lastManualScrollAt !== null && lastManualScrollAt >= lastActivityAtRef.current) {
+      return
+    }
+
+    if (!isFollowingOrchestratorRef.current) {
+      followOrchestrator()
+    }
+  }
+
+  const registerParticipantActivity = (options?: { manualScroll?: boolean }): void => {
+    lastActivityAtRef.current = Date.now()
+    if (options?.manualScroll) {
+      lastManualScrollAtRef.current = lastActivityAtRef.current
+    }
+
+    clearInactivityTimer()
+    inactivityTimerRef.current = window.setTimeout(handleParticipantInactivity, INACTIVITY_UNFOCUS_DELAY_MS)
+  }
+
   const isIssueFieldIdleForSync = (issueId: string, fieldId: string): boolean => {
     const targetId = fieldPresenceTargetId(fieldId)
     const presenceEntry = roomStateRef.current.issueWorkspace.presence.find(
@@ -974,19 +1019,14 @@ export default function HomePage() {
   const syncIssueFieldToJira = async (issueId: string, issueKey: string, fieldId: string, value: string): Promise<void> => {
     const syncKey = `${issueId}:${fieldId}`
     const normalizedValue = normalizeEditorText(value)
-    const config = jiraConfigRef.current
-    if (!hasJiraSyncConfig(config)) {
-      return
-    }
 
     jiraFieldSyncInFlightRef.current.add(syncKey)
     jiraFieldLastRequestedValueRef.current.set(syncKey, normalizedValue)
 
     try {
       const result = await syncIssueFieldAction({
-        baseUrl: config.baseUrl.trim(),
-        email: config.email.trim(),
-        apiToken: config.apiToken.trim(),
+        participantId: roomStateRef.current.myId || undefined,
+        issueId,
         issueKey,
         fieldId,
         value: normalizedValue,
@@ -1004,6 +1044,48 @@ export default function HomePage() {
     } finally {
       jiraFieldSyncInFlightRef.current.delete(syncKey)
     }
+  }
+
+  const flushPendingJiraSyncs = async (): Promise<void> => {
+    if (!isConnectedRef.current || !isCurrentUserOrchestrator()) {
+      return
+    }
+
+    const syncRequests: Array<Promise<void>> = []
+    for (const syncEntry of roomStateRef.current.issueWorkspace.sync) {
+      const draft = roomStateRef.current.issueWorkspace.drafts.find((entry) => entry.issueId === syncEntry.issueId) ?? null
+      const issueKey = normalizeIssueKey(syncEntry.issueKey || draft?.issueKey || '')
+      if (!issueKey) {
+        continue
+      }
+
+      for (const field of syncEntry.fields) {
+        const normalizedFieldId = normalizeEditorFieldId(field.fieldId)
+        if (normalizedFieldId !== 'description' || field.status === 'clean' || field.status === 'syncing') {
+          continue
+        }
+
+        const retryAt = field.nextRetryAt ? new Date(field.nextRetryAt).getTime() : 0
+        if (field.status === 'failed' && retryAt > Date.now()) {
+          continue
+        }
+
+        const draftUpdatedAt = draft ? new Date(draft.updatedAt).getTime() : 0
+        const hasIdleDebounceElapsed = !draft || !Number.isFinite(draftUpdatedAt) || Date.now() - draftUpdatedAt >= 1_500
+        if (!hasIdleDebounceElapsed || !isIssueFieldIdleForSync(syncEntry.issueId, normalizedFieldId)) {
+          continue
+        }
+
+        const syncKey = `${syncEntry.issueId}:${normalizedFieldId}`
+        if (jiraFieldSyncInFlightRef.current.has(syncKey) && jiraFieldLastRequestedValueRef.current.get(syncKey) === field.value) {
+          continue
+        }
+
+        syncRequests.push(syncIssueFieldToJira(syncEntry.issueId, issueKey, normalizedFieldId, field.value))
+      }
+    }
+
+    await Promise.all(syncRequests)
   }
 
   const selectedIssueId = localSelectedIssueIdOverride ?? roomState.issueWorkspace.selectedIssueId
@@ -1134,7 +1216,7 @@ export default function HomePage() {
     return normalized
   }
 
-  const readStoredJiraConfig = (): JiraConfig | null => {
+  const readStoredJiraConfig = (): StoredJiraConfig | null => {
     const raw = window.localStorage.getItem(JIRA_STORAGE_KEY)
     if (!raw) {
       return null
@@ -1148,16 +1230,19 @@ export default function HomePage() {
 
       const normalized: JiraConfig = {
         baseUrl: toStringOrEmpty(parsed.baseUrl).trim(),
-        email: toStringOrEmpty(parsed.email).trim(),
-        apiToken: toStringOrEmpty(parsed.apiToken).trim(),
+        email: '',
+        apiToken: '',
         ticketPrefix: normalizeTicketPrefix(toStringOrEmpty(parsed.ticketPrefix) || toStringOrEmpty(parsed.boardId)),
       }
 
-      if (!normalized.baseUrl || !normalized.email || !normalized.apiToken || !normalized.ticketPrefix) {
+      if (!normalized.baseUrl || !normalized.ticketPrefix) {
         return null
       }
 
-      return normalized
+      return {
+        baseUrl: normalized.baseUrl,
+        ticketPrefix: normalized.ticketPrefix,
+      }
     } catch {
       return null
     }
@@ -1172,12 +1257,16 @@ export default function HomePage() {
       ticketPrefix: normalizeTicketPrefix(value.ticketPrefix),
     }
 
-    if (!normalized.baseUrl && !normalized.email && !normalized.apiToken && !normalized.ticketPrefix) {
+    if (!normalized.baseUrl && !normalized.ticketPrefix) {
       window.localStorage.removeItem(JIRA_STORAGE_KEY)
       return
     }
 
-    window.localStorage.setItem(JIRA_STORAGE_KEY, JSON.stringify(normalized))
+    const stored: StoredJiraConfig = {
+      baseUrl: normalized.baseUrl,
+      ticketPrefix: normalized.ticketPrefix,
+    }
+    window.localStorage.setItem(JIRA_STORAGE_KEY, JSON.stringify(stored))
   }
 
   const normalizeJiraConfig = (value: JiraConfig): JiraConfig => ({
@@ -1477,6 +1566,8 @@ export default function HomePage() {
       return
     }
 
+    registerParticipantActivity({ manualScroll: true })
+
     if (canFollowCurrentOrchestrator() && isFollowingOrchestrator) {
       isFollowingOrchestratorRef.current = false
       setIsFollowingOrchestrator(false)
@@ -1485,6 +1576,7 @@ export default function HomePage() {
   }
 
   const handleIssueFieldFocus = (targetId: string): void => {
+    registerParticipantActivity()
     setIssuePresence(targetId, true)
 
     if (isCurrentUserOrchestrator()) {
@@ -1521,12 +1613,14 @@ export default function HomePage() {
     localSelectedIssueIdOverrideRef.current = null
     setLocalSelectedIssueIdOverride(null)
     syncOrchestratorFollowState(true)
+    lastManualScrollAtRef.current = null
     window.requestAnimationFrame(() => applyOrchestratorScrollSync(true))
   }
 
   const selectIssue = (issue: JiraIssue, group: JiraIssueGroup): void => {
     ticketWorkspaceRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
     releaseAllIssuePresence()
+    registerParticipantActivity()
 
     const sharedIssueId = roomStateRef.current.issueWorkspace.selectedIssueId
     if (canFollowCurrentOrchestrator() && issue.id !== sharedIssueId) {
@@ -1568,6 +1662,8 @@ export default function HomePage() {
       return
     }
 
+    registerParticipantActivity()
+
     send({
       type: 'add_issue_subtask',
       issueId: identity.issueId,
@@ -1576,6 +1672,38 @@ export default function HomePage() {
       title,
     })
     setNewSubtaskTitle('')
+  }
+
+  const updateIssueSubtask = (
+    subtaskId: string,
+    updates: Partial<Pick<IssueSubtask, 'title' | 'description' | 'done'>>,
+  ): void => {
+    const identity = selectedIssueIdentity()
+    if (!identity) {
+      return
+    }
+
+    registerParticipantActivity()
+    send({
+      type: 'update_issue_subtask',
+      issueId: identity.issueId,
+      subtaskId,
+      ...updates,
+    })
+  }
+
+  const removeIssueSubtask = (subtaskId: string): void => {
+    const identity = selectedIssueIdentity()
+    if (!identity) {
+      return
+    }
+
+    registerParticipantActivity()
+    send({
+      type: 'remove_issue_subtask',
+      issueId: identity.issueId,
+      subtaskId,
+    })
   }
 
   const requestNewColor = (): void => {
@@ -1605,11 +1733,14 @@ export default function HomePage() {
         return visibleIssueOrder[(currentIndex + 1) % visibleIssueOrder.length]
       })()
 
-      if (isCurrentUserOrchestrator()) {
-        orchestratorFocusedTargetIdRef.current = null
-        clearOrchestratorScrollSyncTimer()
-      }
-      send({ type: 'next_ticket', nextIssueId })
+      void (async () => {
+        if (isCurrentUserOrchestrator()) {
+          orchestratorFocusedTargetIdRef.current = null
+          clearOrchestratorScrollSyncTimer()
+          await flushPendingJiraSyncs()
+        }
+        send({ type: 'next_ticket', nextIssueId })
+      })()
       return
     }
     send({ type: 'reveal' })
@@ -1660,12 +1791,15 @@ export default function HomePage() {
 
     const storedJiraConfig = readStoredJiraConfig()
     if (storedJiraConfig) {
-      setJiraConfig(storedJiraConfig)
+      setJiraConfig((current) => ({ ...current, ...storedJiraConfig }))
     }
 
     return () => {
       window.clearTimeout(profileSyncTimerRef.current)
+      window.clearInterval(heartbeatTimerRef.current)
       clearOrchestratorScrollSyncTimer()
+      clearInactivityTimer()
+      void flushPendingJiraSyncs()
       releaseAllIssuePresence()
       disposeAllIssueDocs()
       socketRef.current?.close()
@@ -1685,6 +1819,33 @@ export default function HomePage() {
     setIsRawTicketDataOpen(false)
     setIsCrdtDebugOpen(false)
   }, [selectedIssueId])
+
+  useEffect(() => {
+    clearInactivityTimer()
+    if (!isConnected || isCurrentUserOrchestrator()) {
+      return
+    }
+
+    registerParticipantActivity()
+    return clearInactivityTimer
+  }, [isConnected, roomState.myId, roomState.orchestratorId])
+
+  useEffect(() => {
+    window.clearInterval(heartbeatTimerRef.current)
+    if (!isConnected) {
+      heartbeatTimerRef.current = undefined
+      return
+    }
+
+    heartbeatTimerRef.current = window.setInterval(() => {
+      send({ type: 'heartbeat' })
+    }, PARTICIPANT_HEARTBEAT_INTERVAL_MS)
+
+    return () => {
+      window.clearInterval(heartbeatTimerRef.current)
+      heartbeatTimerRef.current = undefined
+    }
+  }, [isConnected])
 
   useEffect(() => {
     const nextBaselineByIssue = new Map<string, Map<string, string>>()
@@ -1765,56 +1926,13 @@ export default function HomePage() {
   ])
 
   useEffect(() => {
-    if (!isConnected || !isCurrentUserOrchestrator() || !hasJiraSyncConfig(jiraConfig)) {
+    if (!isConnected || !isCurrentUserOrchestrator()) {
       return
     }
-
-    for (const draft of roomState.issueWorkspace.drafts) {
-      const normalizedIssueId = normalizeIssueId(draft.issueId)
-      if (!normalizedIssueId) {
-        continue
-      }
-
-      const issueBaseline = jiraFieldBaselineByIssueRef.current.get(normalizedIssueId)
-      if (!issueBaseline) {
-        continue
-      }
-
-      const issueKey = normalizeIssueKey(draft.issueKey) || jiraIssueKeyByIdRef.current.get(normalizedIssueId) || ''
-      if (!issueKey) {
-        continue
-      }
-
-      for (const field of draft.fields) {
-        const normalizedFieldId = normalizeEditorFieldId(field.id)
-        if (!normalizedFieldId || !issueBaseline.has(normalizedFieldId)) {
-          continue
-        }
-
-        if (!isIssueFieldIdleForSync(normalizedIssueId, normalizedFieldId)) {
-          continue
-        }
-
-        const nextValue = normalizeEditorText(field.value)
-        const baselineValue = issueBaseline.get(normalizedFieldId) ?? ''
-        if (nextValue === baselineValue) {
-          continue
-        }
-
-        const syncKey = `${normalizedIssueId}:${normalizedFieldId}`
-        if (
-          jiraFieldSyncInFlightRef.current.has(syncKey) &&
-          jiraFieldLastRequestedValueRef.current.get(syncKey) === nextValue
-        ) {
-          continue
-        }
-
-        void syncIssueFieldToJira(normalizedIssueId, issueKey, normalizedFieldId, nextValue)
-      }
-    }
+    void flushPendingJiraSyncs()
   }, [
     isConnected,
-    jiraConfig,
+    roomState.issueWorkspace.sync,
     roomState.issueWorkspace.drafts,
     roomState.issueWorkspace.presence,
     roomState.myId,
@@ -1851,6 +1969,21 @@ export default function HomePage() {
   const selectedIssueDraft = useMemo(
     () => (selectedIssueId ? roomState.issueWorkspace.drafts.find((draft) => draft.issueId === selectedIssueId) ?? null : null),
     [roomState.issueWorkspace.drafts, selectedIssueId],
+  )
+
+  const selectedIssueSubtasks = useMemo(
+    () => (selectedIssueId ? roomState.issueWorkspace.subtasks.find((entry) => entry.issueId === selectedIssueId)?.subtasks ?? [] : []),
+    [roomState.issueWorkspace.subtasks, selectedIssueId],
+  )
+
+  const selectedIssueSyncState = useMemo(
+    () => (selectedIssueId ? roomState.issueWorkspace.sync.find((entry) => entry.issueId === selectedIssueId) ?? null : null),
+    [roomState.issueWorkspace.sync, selectedIssueId],
+  )
+
+  const descriptionSyncState = useMemo(
+    () => selectedIssueSyncState?.fields.find((field) => normalizeEditorFieldId(field.fieldId) === 'description') ?? null,
+    [selectedIssueSyncState],
   )
 
   const selectedIssueFromJira = useMemo(
@@ -1961,6 +2094,12 @@ export default function HomePage() {
   const selectedIssueCrdtSyncedCount = selectedIssueCrdtSync.filter((entry) => entry.synced).length
 
   const selectedIssueKey = selectedIssueDraft?.issueKey || selectedIssueFromJira?.key || ''
+  const canManageRoom = roomState.orchestratorId === null || roomState.orchestratorId === roomState.myId
+  const canEditSelectedIssue =
+    !selectedIssueId ||
+    canManageRoom ||
+    roomState.settings.allowParticipantEditingOutsideFocus ||
+    selectedIssueId === roomState.issueWorkspace.selectedIssueId
 
   return (
     <main style={{ background: 'var(--color-bg)' }}>
@@ -2027,6 +2166,8 @@ export default function HomePage() {
               selectedIssueId={selectedIssueId}
               selectedIssueKey={selectedIssueKey}
               selectedIssueDraft={selectedIssueDraft}
+              selectedIssueSubtasks={selectedIssueSubtasks}
+              descriptionSyncState={descriptionSyncState}
               selectedIssueFromJira={selectedIssueFromJira}
               visibleIssueFields={visibleIssueFields}
               votedCount={votedCount}
@@ -2040,6 +2181,7 @@ export default function HomePage() {
               orchestratorColorHue={orchestratorParticipant?.colorHue ?? 210}
               followedFieldTargetId={followedFieldTargetId}
               newSubtaskTitle={newSubtaskTitle}
+              canEditSelectedIssue={canEditSelectedIssue}
               onToggleRawData={() => setIsRawTicketDataOpen((value) => !value)}
               onToggleCrdtDebug={() => setIsCrdtDebugOpen((value) => !value)}
               onFieldInput={(issueId, issueKey, issueUrl, field, value) => {
@@ -2053,8 +2195,11 @@ export default function HomePage() {
               }}
               onFieldFocus={handleIssueFieldFocus}
               onFieldBlur={handleIssueFieldBlur}
+              onFieldActivity={() => registerParticipantActivity()}
               onNewSubtaskTitleChange={setNewSubtaskTitle}
               onAddSubtask={addIssueSubtask}
+              onUpdateSubtask={updateIssueSubtask}
+              onRemoveSubtask={removeIssueSubtask}
               getPresenceLabelForTarget={getPresenceLabelForTarget}
               isTargetEditedByOthers={isTargetEditedByOthers}
               getIssueFieldYText={getIssueFieldYText}
@@ -2075,8 +2220,10 @@ export default function HomePage() {
               revealed={roomState.revealed}
               myVote={roomState.myVote}
               canReveal={canReveal}
+              canManageRoom={canManageRoom}
               isFollowingOrchestrator={isFollowingOrchestrator}
               canFollowOrchestrator={canFollowCurrentOrchestrator()}
+              roomSettings={roomState.settings}
               isProfileEditing={isProfileEditing}
               nameInput={nameInput}
               joinedName={joinedName}
@@ -2085,6 +2232,12 @@ export default function HomePage() {
               revealBuckets={revealBuckets}
               participantNameInputRef={participantNameInputRef}
               onRevealOrNext={revealOrNextTicket}
+              onToggleAllowEditingOutsideFocus={(nextValue) => {
+                send({
+                  type: 'set_room_settings',
+                  settings: { allowParticipantEditingOutsideFocus: nextValue },
+                })
+              }}
               onVote={setVote}
               onRequestNewColor={requestNewColor}
               onFollowOrchestrator={followOrchestrator}

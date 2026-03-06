@@ -16,6 +16,8 @@ type JiraConfig = {
   quickFilterFieldIds: string
 }
 
+type StoredJiraConfig = Pick<JiraConfig, 'baseUrl' | 'ticketPrefix' | 'quickFilterFieldIds'>
+
 type JiraIssueResult = {
   groups?: Array<{
     issues?: unknown[]
@@ -90,7 +92,7 @@ const normalizeJiraConfig = (value: JiraConfig): JiraConfig => ({
   quickFilterFieldIds: normalizeQuickFilterFieldList(value.quickFilterFieldIds),
 })
 
-const readStoredJiraConfig = (): JiraConfig | null => {
+const readStoredJiraConfig = (): StoredJiraConfig | null => {
   const raw = window.localStorage.getItem(JIRA_STORAGE_KEY)
   if (!raw) {
     return null
@@ -104,17 +106,21 @@ const readStoredJiraConfig = (): JiraConfig | null => {
 
     const normalized = normalizeJiraConfig({
       baseUrl: toStringOrEmpty(parsed.baseUrl),
-      email: toStringOrEmpty(parsed.email),
-      apiToken: toStringOrEmpty(parsed.apiToken),
+      email: '',
+      apiToken: '',
       ticketPrefix: toStringOrEmpty(parsed.ticketPrefix),
       quickFilterFieldIds: toStringOrEmpty(parsed.quickFilterFieldIds),
     })
 
-    if (!normalized.baseUrl || !normalized.email || !normalized.apiToken || !normalized.ticketPrefix) {
+    if (!normalized.baseUrl || !normalized.ticketPrefix) {
       return null
     }
 
-    return normalized
+    return {
+      baseUrl: normalized.baseUrl,
+      ticketPrefix: normalized.ticketPrefix,
+      quickFilterFieldIds: normalized.quickFilterFieldIds,
+    }
   } catch {
     return null
   }
@@ -122,7 +128,12 @@ const readStoredJiraConfig = (): JiraConfig | null => {
 
 const saveJiraConfigLocally = (value: JiraConfig): void => {
   const normalized = normalizeJiraConfig(value)
-  window.localStorage.setItem(JIRA_STORAGE_KEY, JSON.stringify(normalized))
+  const stored: StoredJiraConfig = {
+    baseUrl: normalized.baseUrl,
+    ticketPrefix: normalized.ticketPrefix,
+    quickFilterFieldIds: normalized.quickFilterFieldIds,
+  }
+  window.localStorage.setItem(JIRA_STORAGE_KEY, JSON.stringify(stored))
 }
 
 const parseIssueCount = (payload: unknown): number => {
@@ -152,7 +163,7 @@ export default function DashboardPage() {
     setPlanningRoomUrl(`${window.location.origin}/`)
     const stored = readStoredJiraConfig()
     if (stored) {
-      setJiraConfig(stored)
+      setJiraConfig((current) => ({ ...current, ...stored }))
     }
   }, [])
 

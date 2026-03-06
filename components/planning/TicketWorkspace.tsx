@@ -7,15 +7,18 @@ import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import type {
   IssueEditorField,
+  IssueFieldSyncSnapshot,
   IssueDraftSnapshot,
+  IssueSubtask,
   JiraIssue,
-  RoomStateSnapshot,
 } from '../../src/lib/protocol'
 
 type TicketWorkspaceProps = {
   selectedIssueId: string | null
   selectedIssueKey: string
   selectedIssueDraft: IssueDraftSnapshot | null
+  selectedIssueSubtasks: IssueSubtask[]
+  descriptionSyncState: IssueFieldSyncSnapshot | null
   selectedIssueFromJira: JiraIssue | null
   visibleIssueFields: IssueEditorField[]
   votedCount: number
@@ -29,13 +32,17 @@ type TicketWorkspaceProps = {
   orchestratorColorHue: number
   followedFieldTargetId: string | null
   newSubtaskTitle: string
+  canEditSelectedIssue: boolean
   onToggleRawData: () => void
   onToggleCrdtDebug: () => void
   onFieldInput: (issueId: string, issueKey: string, issueUrl: string, field: IssueEditorField, value: string) => void
   onFieldFocus: (targetId: string) => void
   onFieldBlur: (targetId: string) => void
+  onFieldActivity: () => void
   onNewSubtaskTitleChange: (value: string) => void
   onAddSubtask: () => void
+  onUpdateSubtask: (subtaskId: string, updates: Partial<Pick<IssueSubtask, 'title' | 'description' | 'done'>>) => void
+  onRemoveSubtask: (subtaskId: string) => void
   getPresenceLabelForTarget: (targetId: string) => string
   isTargetEditedByOthers: (targetId: string) => boolean
   getIssueFieldYText: (issueId: string, field: IssueEditorField) => Y.Text | null
@@ -48,6 +55,8 @@ export default function TicketWorkspace({
   selectedIssueId,
   selectedIssueKey,
   selectedIssueDraft,
+  selectedIssueSubtasks,
+  descriptionSyncState,
   selectedIssueFromJira,
   visibleIssueFields,
   votedCount,
@@ -61,13 +70,17 @@ export default function TicketWorkspace({
   orchestratorColorHue,
   followedFieldTargetId,
   newSubtaskTitle,
+  canEditSelectedIssue,
   onToggleRawData,
   onToggleCrdtDebug,
   onFieldInput,
   onFieldFocus,
   onFieldBlur,
+  onFieldActivity,
   onNewSubtaskTitleChange,
   onAddSubtask,
+  onUpdateSubtask,
+  onRemoveSubtask,
   getPresenceLabelForTarget,
   isTargetEditedByOthers,
   getIssueFieldYText,
@@ -236,6 +249,7 @@ export default function TicketWorkspace({
                       yText={field.id === 'description' ? getIssueFieldYText(selectedIssueId, field) : null}
                       minRows={field.id === 'description' ? 6 : 3}
                       busy={editedByOthers}
+                      readOnly={!canEditSelectedIssue}
                       markdownMode={shouldUseMarkdownEditor(field.id)}
                       onInput={(value) => {
                         if (!selectedIssueId || !selectedIssueKey) return
@@ -249,7 +263,22 @@ export default function TicketWorkspace({
                       }}
                       onFocus={() => onFieldFocus(presenceTarget)}
                       onBlur={() => onFieldBlur(presenceTarget)}
+                      onActivity={onFieldActivity}
                     />
+                    {field.id === 'description' && descriptionSyncState ? (
+                      <p
+                        className="mt-1.5 text-[11px]"
+                        style={{ color: descriptionSyncState.status === 'failed' ? 'var(--color-danger)' : 'var(--color-text-tertiary)' }}
+                      >
+                        {descriptionSyncState.status === 'failed'
+                          ? descriptionSyncState.failureMessage || 'Jira sync failed; retrying.'
+                          : descriptionSyncState.status === 'syncing'
+                            ? 'Syncing description back to Jira...'
+                            : descriptionSyncState.status === 'dirty'
+                              ? 'Description has unsynced room changes.'
+                              : 'Description is synced with Jira.'}
+                      </p>
+                    ) : null}
                   </div>
                 )
               })}
@@ -269,23 +298,51 @@ export default function TicketWorkspace({
               Subtasks
             </h3>
 
-            {selectedIssueDraft && selectedIssueDraft.subtasks.length > 0 ? (
+            {selectedIssueSubtasks.length > 0 ? (
               <div className="mb-3 space-y-0">
-                {selectedIssueDraft.subtasks.map((subtask) => {
+                {selectedIssueSubtasks.map((subtask) => {
                   const subtaskIdentifier = subtask.key || subtask.id
                   return (
                     <div
                       key={subtask.id}
-                      className="flex items-center justify-between gap-2 border-b py-2 last:border-b-0"
+                      className="space-y-2 border-b py-2 last:border-b-0"
                       style={{ borderColor: 'var(--color-border-subtle)' }}
                     >
-                      <div className="flex items-center gap-2 overflow-hidden">
-                        <span className="text-xs font-bold" style={{ color: 'var(--color-accent)' }}>
-                          {subtaskIdentifier}
-                        </span>
-                        <span className="truncate text-sm" style={{ color: 'var(--color-text-primary)' }}>
-                          {subtask.title}
-                        </span>
+                      <div className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={subtask.done}
+                          disabled={!canEditSelectedIssue}
+                          onChange={(event) => onUpdateSubtask(subtask.id, { done: event.currentTarget.checked })}
+                        />
+                        <div className="min-w-0 flex-1 space-y-2">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <span className="text-xs font-bold" style={{ color: 'var(--color-accent)' }}>
+                              {subtaskIdentifier}
+                            </span>
+                            <Input
+                              value={subtask.title}
+                              disabled={!canEditSelectedIssue}
+                              onChange={(event) => onUpdateSubtask(subtask.id, { title: event.currentTarget.value })}
+                              className="h-8"
+                            />
+                          </div>
+                          <Input
+                            value={subtask.description}
+                            placeholder="Subtask notes"
+                            disabled={!canEditSelectedIssue}
+                            onChange={(event) => onUpdateSubtask(subtask.id, { description: event.currentTarget.value })}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={!canEditSelectedIssue}
+                          onClick={() => onRemoveSubtask(subtask.id)}
+                        >
+                          Remove
+                        </Button>
                       </div>
                       {subtask.url ? (
                         <a
@@ -315,6 +372,7 @@ export default function TicketWorkspace({
               <Input
                 value={newSubtaskTitle}
                 placeholder="Add subtask..."
+                disabled={!canEditSelectedIssue}
                 onChange={(event) => onNewSubtaskTitleChange(event.currentTarget.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
@@ -324,10 +382,15 @@ export default function TicketWorkspace({
                 }}
                 className="flex-1"
               />
-              <Button type="button" variant="secondary" size="sm" onClick={onAddSubtask}>
+              <Button type="button" variant="secondary" size="sm" onClick={onAddSubtask} disabled={!canEditSelectedIssue}>
                 Add
               </Button>
             </div>
+            {!canEditSelectedIssue ? (
+              <p className="mt-2 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>
+                Editing this ticket is disabled while the orchestrator restricts work to the shared focus.
+              </p>
+            ) : null}
           </div>
 
           {/* Status message */}

@@ -3,7 +3,7 @@
 import type { RefObject } from 'react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
-import type { EstimateOption, ParticipantView } from '../../src/lib/protocol'
+import type { EstimateOption, ParticipantView, RoomSettingsSnapshot } from '../../src/lib/protocol'
 import { ESTIMATE_OPTIONS } from '../../src/lib/protocol'
 
 type ParticipantsPanelProps = {
@@ -13,8 +13,10 @@ type ParticipantsPanelProps = {
   revealed: boolean
   myVote: EstimateOption | null
   canReveal: boolean
+  canManageRoom: boolean
   isFollowingOrchestrator: boolean
   canFollowOrchestrator: boolean
+  roomSettings: RoomSettingsSnapshot
   isProfileEditing: boolean
   nameInput: string
   joinedName: string
@@ -23,6 +25,7 @@ type ParticipantsPanelProps = {
   revealBuckets: Array<{ estimate: string; voters: Array<{ id: string; name: string; colorHue: number }> }>
   participantNameInputRef: RefObject<HTMLInputElement | null>
   onRevealOrNext: () => void
+  onToggleAllowEditingOutsideFocus: (nextValue: boolean) => void
   onVote: (option: EstimateOption) => void
   onRequestNewColor: () => void
   onFollowOrchestrator: () => void
@@ -40,8 +43,10 @@ export default function ParticipantsPanel({
   revealed,
   myVote,
   canReveal,
+  canManageRoom,
   isFollowingOrchestrator,
   canFollowOrchestrator,
+  roomSettings,
   isProfileEditing,
   nameInput,
   joinedName,
@@ -50,6 +55,7 @@ export default function ParticipantsPanel({
   revealBuckets,
   participantNameInputRef,
   onRevealOrNext,
+  onToggleAllowEditingOutsideFocus,
   onVote,
   onRequestNewColor,
   onFollowOrchestrator,
@@ -242,12 +248,24 @@ export default function ParticipantsPanel({
         className="shrink-0 border-t px-3 pt-3 pb-3"
         style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface)' }}
       >
+        <div className="mb-3 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--color-border)' }}>
+          <label className="flex items-center justify-between gap-3 text-[11px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+            <span>Allow editing outside shared focus</span>
+            <input
+              type="checkbox"
+              checked={roomSettings.allowParticipantEditingOutsideFocus}
+              disabled={!canManageRoom}
+              onChange={(event) => onToggleAllowEditingOutsideFocus(event.currentTarget.checked)}
+            />
+          </label>
+        </div>
+
         {/* Action button */}
         <Button
           type="button"
           className="mb-3 w-full"
           onClick={onRevealOrNext}
-          disabled={!revealed && !canReveal}
+          disabled={!canManageRoom || (!revealed && !canReveal)}
         >
           {revealed ? 'Next ticket' : 'Reveal votes'}
         </Button>

@@ -7,12 +7,16 @@ import type {
   IssueDraftSnapshot,
   IssueEditorField,
   IssueFieldCrdtSnapshot,
+  IssueFieldSyncSnapshot,
   IssuePresenceSnapshot,
   IssueSubtask,
+  IssueSubtasksSnapshot,
+  IssueSyncSnapshot,
   JiraIssue,
   JiraIssueGroup,
   JiraIssueResult,
   OrchestratorViewSnapshot,
+  RoomSettingsSnapshot,
   RoomStateSnapshot,
 } from "../src/lib/protocol";
 import * as Y from 'yjs'
@@ -22,12 +26,24 @@ type RoomRecord = {
   revealed: boolean;
   selectedIssueId: string | null;
   orchestratorId: string | null;
+  settings: RoomSettingsSnapshot;
   orchestratorView: OrchestratorViewSnapshot;
   issueDrafts: IssueDraftSnapshot[];
+  issueSubtasks: IssueSubtasksSnapshot[];
+  issueSync: IssueSyncSnapshot[];
   issueCrdt: IssueCrdtSnapshot[];
   issuePresence: IssuePresenceSnapshot[];
   jiraIssues: JiraIssueResult | null;
-  jiraSubtasksByIssueId: Record<string, IssueSubtask[]>;
+  jiraConnection: {
+    baseUrl: string;
+    email: string;
+    apiToken: string;
+    ticketPrefix: string;
+    quickFilterFieldIds: string[];
+    ownerTokenIdentifier: string;
+    ownerName: string;
+    updatedAt: string;
+  } | null;
   estimatedIssueIds: string[];
 };
 
@@ -38,6 +54,7 @@ type ParticipantRecord = {
   colorHue: number;
   vote: EstimateOption | null;
   isFollowingOrchestrator: boolean;
+  lastSeenAt: number;
 };
 
 type QueryCtx = {
@@ -75,6 +92,13 @@ const MAX_ISSUE_CRDT_FIELDS_PER_ISSUE = 32
 const ISSUE_PRESENCE_TARGET_ID_MAX_LENGTH = 120
 const MAX_ORCHESTRATOR_SCROLL_TOP = 2_000_000
 const CRDT_UPDATE_MAX_BYTES = 1024 * 256
+const PRESENCE_STALE_AFTER_MS = 45_000
+const SYNC_RETRY_BASE_DELAY_MS = 5_000
+const SYNC_RETRY_MAX_DELAY_MS = 60_000
+
+const createDefaultRoomSettings = (): RoomSettingsSnapshot => ({
+  allowParticipantEditingOutsideFocus: true,
+})
 
 const createEmptyOrchestratorView = (): OrchestratorViewSnapshot => ({
   issueId: null,
@@ -86,12 +110,15 @@ const createDefaultRoom = (): Omit<RoomRecord, '_id'> => ({
   revealed: false,
   selectedIssueId: null,
   orchestratorId: null,
+  settings: createDefaultRoomSettings(),
   orchestratorView: createEmptyOrchestratorView(),
   issueDrafts: [],
+  issueSubtasks: [],
+  issueSync: [],
   issueCrdt: [],
   issuePresence: [],
   jiraIssues: null,
-  jiraSubtasksByIssueId: {},
+  jiraConnection: null,
   estimatedIssueIds: [],
 })
 
@@ -206,6 +233,166 @@ const normalizeEditorFields = (value: unknown): IssueEditorField[] => {
 }
 
 const normalizeSubtaskTitle = (value: unknown) => normalizeIssueText(value, SUBTASK_TITLE_MAX_LENGTH).trim()
+
+const normalizeRoomSettings = (value: unknown): RoomSettingsSnapshot => {
+  if (!isRecord(value)) {
+    return createDefaultRoomSettings()
+  }
+
+  return {
+    allowParticipantEditingOutsideFocus: value.allowParticipantEditingOutsideFocus !== false,
+  }
+}
+
+const normalizeIssueSubtask = (value: unknown): IssueSubtask | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const id = normalizeIssueId(value.id)
+  const title = normalizeSubtaskTitle(value.title)
+  if (!id || !title) {
+    return null
+  }
+
+  return {
+    id,
+    key: normalizeIssueKey(value.key),
+    url: typeof value.url === 'string' ? normalizeIssueUrl(value.url) : null,
+    title,
+    description: normalizeIssueText(value.description),
+    done: value.done === true,
+  }
+}
+
+const normalizeIssueSubtasks = (value: unknown): IssueSubtasksSnapshot[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const entries = new Map<string, IssueSubtasksSnapshot>()
+  for (const candidate of value) {
+    if (!isRecord(candidate)) {
+      continue
+    }
+
+    const issueId = normalizeIssueId(candidate.issueId)
+    if (!issueId) {
+      continue
+    }
+
+    const subtasks = Array.isArray(candidate.subtasks)
+      ? candidate.subtasks.map((subtask) => normalizeIssueSubtask(subtask)).filter((subtask): subtask is IssueSubtask => subtask !== null).slice(0, MAX_SUBTASKS_PER_ISSUE)
+      : []
+    entries.set(issueId, { issueId, subtasks })
+  }
+
+  return [...entries.values()]
+}
+
+const normalizeIssueFieldSyncStatus = (value: unknown): IssueFieldSyncSnapshot['status'] => {
+  if (value === 'dirty' || value === 'syncing' || value === 'failed') {
+    return value
+  }
+  return 'clean'
+}
+
+const normalizeIsoStringOrNull = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed || null
+}
+
+const normalizeRetryCount = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0
+  }
+  return Math.max(0, Math.floor(value))
+}
+
+const normalizeIssueFieldSyncSnapshot = (value: unknown): IssueFieldSyncSnapshot | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const fieldId = normalizeFieldId(value.fieldId)
+  if (!fieldId) {
+    return null
+  }
+
+  return {
+    fieldId,
+    label: normalizeFieldLabel(value.label, fieldId),
+    value: normalizeIssueText(value.value),
+    status: normalizeIssueFieldSyncStatus(value.status),
+    retryCount: normalizeRetryCount(value.retryCount),
+    nextRetryAt: normalizeIsoStringOrNull(value.nextRetryAt),
+    lastAttemptAt: normalizeIsoStringOrNull(value.lastAttemptAt),
+    lastSyncedAt: normalizeIsoStringOrNull(value.lastSyncedAt),
+    failureMessage: typeof value.failureMessage === 'string' ? value.failureMessage.slice(0, 300) : null,
+  }
+}
+
+const normalizeIssueSync = (value: unknown): IssueSyncSnapshot[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const entries = new Map<string, IssueSyncSnapshot>()
+  for (const candidate of value) {
+    if (!isRecord(candidate)) {
+      continue
+    }
+
+    const issueId = normalizeIssueId(candidate.issueId)
+    if (!issueId) {
+      continue
+    }
+
+    const fields = Array.isArray(candidate.fields)
+      ? candidate.fields
+          .map((field) => normalizeIssueFieldSyncSnapshot(field))
+          .filter((field): field is IssueFieldSyncSnapshot => field !== null)
+      : []
+    entries.set(issueId, {
+      issueId,
+      issueKey: normalizeIssueKey(candidate.issueKey),
+      issueUrl: normalizeIssueUrl(candidate.issueUrl),
+      fields,
+    })
+  }
+
+  return [...entries.values()]
+}
+
+const normalizeJiraConnection = (value: unknown): RoomRecord['jiraConnection'] => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const baseUrl = normalizeIssueUrl(value.baseUrl)
+  const email = normalizeIssueText(value.email, 200).trim()
+  const apiToken = normalizeIssueText(value.apiToken, 400).trim()
+  const ownerTokenIdentifier = normalizeIssueText(value.ownerTokenIdentifier, 200).trim()
+  if (!baseUrl || !email || !apiToken || !ownerTokenIdentifier) {
+    return null
+  }
+
+  return {
+    baseUrl,
+    email,
+    apiToken,
+    ticketPrefix: normalizeIssueKey(value.ticketPrefix),
+    quickFilterFieldIds: Array.isArray(value.quickFilterFieldIds)
+      ? value.quickFilterFieldIds.map((entry) => normalizeFieldId(entry)).filter(Boolean)
+      : [],
+    ownerTokenIdentifier,
+    ownerName: normalizeIssueText(value.ownerName, 120).trim(),
+    updatedAt: normalizeIsoStringOrNull(value.updatedAt) ?? new Date().toISOString(),
+  }
+}
 
 const normalizeIssueFieldCrdtSnapshot = (value: unknown): IssueFieldCrdtSnapshot | null => {
   if (!isRecord(value)) {
@@ -351,6 +538,169 @@ const ensureIssueCrdtEntry = (room: RoomRecord, issueId: string): IssueCrdtSnaps
   return entry
 }
 
+const ensureIssueSubtasksEntry = (room: RoomRecord, issueId: string, seedSubtasks: IssueSubtask[] = []): IssueSubtasksSnapshot | null => {
+  const normalizedIssueId = normalizeIssueId(issueId)
+  if (!normalizedIssueId) {
+    return null
+  }
+
+  const existing = room.issueSubtasks.find((entry) => entry.issueId === normalizedIssueId)
+  if (existing) {
+    if (seedSubtasks.length > 0 && existing.subtasks.length === 0) {
+      existing.subtasks = seedSubtasks.slice(0, MAX_SUBTASKS_PER_ISSUE).map((subtask) => ({ ...subtask }))
+    }
+    return existing
+  }
+
+  const entry = {
+    issueId: normalizedIssueId,
+    subtasks: seedSubtasks.slice(0, MAX_SUBTASKS_PER_ISSUE).map((subtask) => ({ ...subtask })),
+  }
+  room.issueSubtasks.push(entry)
+  return entry
+}
+
+const getIssueSubtasks = (room: RoomRecord, issueId: string): IssueSubtask[] =>
+  room.issueSubtasks.find((entry) => entry.issueId === normalizeIssueId(issueId))?.subtasks ?? []
+
+const getIssueBaselineFieldValue = (room: RoomRecord, issueId: string, fieldId: string): string | null => {
+  const normalizedIssueId = normalizeIssueId(issueId)
+  const normalizedFieldId = normalizeFieldId(fieldId)
+  if (!normalizedIssueId || !normalizedFieldId || !room.jiraIssues) {
+    return null
+  }
+
+  const issue = room.jiraIssues.groups.flatMap((group) => group.issues).find((entry) => entry.id === normalizedIssueId)
+  if (!issue) {
+    return null
+  }
+
+  const field = issue.fields.find((entry) => normalizeFieldId(entry.id) === normalizedFieldId)
+  return field ? normalizeIssueText(field.value) : null
+}
+
+const createIssueFieldSyncState = (fieldId: string, label: string, value: string): IssueFieldSyncSnapshot => ({
+  fieldId: normalizeFieldId(fieldId),
+  label: normalizeFieldLabel(label, fieldId),
+  value: normalizeIssueText(value),
+  status: 'clean',
+  retryCount: 0,
+  nextRetryAt: null,
+  lastAttemptAt: null,
+  lastSyncedAt: new Date().toISOString(),
+  failureMessage: null,
+})
+
+const ensureIssueSyncEntry = (room: RoomRecord, issueId: string, issueKey: string, issueUrl: string): IssueSyncSnapshot | null => {
+  const normalizedIssueId = normalizeIssueId(issueId)
+  if (!normalizedIssueId) {
+    return null
+  }
+
+  const existing = room.issueSync.find((entry) => entry.issueId === normalizedIssueId)
+  if (existing) {
+    existing.issueKey = normalizeIssueKey(issueKey) || existing.issueKey
+    existing.issueUrl = normalizeIssueUrl(issueUrl) || existing.issueUrl
+    return existing
+  }
+
+  const entry = {
+    issueId: normalizedIssueId,
+    issueKey: normalizeIssueKey(issueKey),
+    issueUrl: normalizeIssueUrl(issueUrl),
+    fields: [],
+  }
+  room.issueSync.push(entry)
+  return entry
+}
+
+const ensureIssueSyncField = (
+  room: RoomRecord,
+  issueId: string,
+  issueKey: string,
+  issueUrl: string,
+  fieldId: string,
+  label: string,
+  value: string,
+): IssueFieldSyncSnapshot | null => {
+  const syncEntry = ensureIssueSyncEntry(room, issueId, issueKey, issueUrl)
+  const normalizedFieldId = normalizeFieldId(fieldId)
+  if (!syncEntry || !normalizedFieldId) {
+    return null
+  }
+
+  const existing = syncEntry.fields.find((entry) => entry.fieldId === normalizedFieldId)
+  if (existing) {
+    existing.label = normalizeFieldLabel(label, existing.label || normalizedFieldId)
+    existing.value = normalizeIssueText(value)
+    return existing
+  }
+
+  const nextField = createIssueFieldSyncState(normalizedFieldId, label, value)
+  syncEntry.fields.push(nextField)
+  return nextField
+}
+
+const updateIssueSyncLifecycle = (
+  room: RoomRecord,
+  issueId: string,
+  issueKey: string,
+  issueUrl: string,
+  fieldId: string,
+  label: string,
+  value: string,
+): void => {
+  const normalizedFieldId = normalizeFieldId(fieldId)
+  if (normalizedFieldId !== 'description') {
+    return
+  }
+
+  const syncField = ensureIssueSyncField(room, issueId, issueKey, issueUrl, normalizedFieldId, label, value)
+  if (!syncField) {
+    return
+  }
+
+  const baselineValue = getIssueBaselineFieldValue(room, issueId, normalizedFieldId)
+  syncField.value = normalizeIssueText(value)
+  syncField.label = normalizeFieldLabel(label, syncField.label || normalizedFieldId)
+  if (baselineValue !== null && syncField.value === baselineValue) {
+    syncField.status = 'clean'
+    syncField.retryCount = 0
+    syncField.nextRetryAt = null
+    syncField.failureMessage = null
+    syncField.lastSyncedAt = new Date().toISOString()
+    return
+  }
+
+  if (syncField.status !== 'syncing') {
+    syncField.status = syncField.retryCount > 0 ? 'failed' : 'dirty'
+  }
+}
+
+const getRetryDelayMs = (retryCount: number): number =>
+  Math.min(SYNC_RETRY_MAX_DELAY_MS, SYNC_RETRY_BASE_DELAY_MS * Math.max(1, 2 ** Math.max(0, retryCount - 1)))
+
+const pruneRoomIssueData = (room: RoomRecord, activeIssueIds: Set<string>): void => {
+  room.issueDrafts = room.issueDrafts.filter((entry) => activeIssueIds.has(entry.issueId))
+  room.issueSubtasks = room.issueSubtasks.filter((entry) => activeIssueIds.has(entry.issueId))
+  room.issueSync = room.issueSync.filter((entry) => activeIssueIds.has(entry.issueId))
+  room.issueCrdt = room.issueCrdt.filter((entry) => activeIssueIds.has(entry.issueId))
+  room.issuePresence = room.issuePresence.filter((entry) => activeIssueIds.has(entry.issueId))
+  room.estimatedIssueIds = room.estimatedIssueIds.filter((entry) => activeIssueIds.has(entry))
+}
+
+const canEditIssue = (room: RoomRecord, clientId: string, issueId: string): boolean => {
+  if (canClientControlTicketFlow(room, clientId)) {
+    return true
+  }
+
+  if (room.settings.allowParticipantEditingOutsideFocus) {
+    return true
+  }
+
+  return room.selectedIssueId === normalizeIssueId(issueId)
+}
+
 const ensureIssueCrdtField = (entry: IssueCrdtSnapshot, fieldId: string, label: string): IssueFieldCrdtSnapshot | null => {
   const normalizedFieldId = normalizeFieldId(fieldId)
   if (!normalizedFieldId) {
@@ -383,7 +733,6 @@ const ensureIssueDraft = (
   issueUrl: string,
   seedFields: IssueEditorField[],
   updatedBy: string | null,
-  seedSubtasks: IssueSubtask[] = [],
 ): IssueDraftSnapshot => {
   const existing = room.issueDrafts.find((entry) => entry.issueId === issueId)
   if (existing) {
@@ -410,22 +759,6 @@ const ensureIssueDraft = (
       }
     }
 
-    if (seedSubtasks.length > 0) {
-      const existingSubtaskIds = new Set(existing.subtasks.map((subtask) => subtask.id))
-      for (const seedSubtask of seedSubtasks) {
-        if (existing.subtasks.length >= MAX_SUBTASKS_PER_ISSUE) {
-          break
-        }
-
-        if (existingSubtaskIds.has(seedSubtask.id)) {
-          continue
-        }
-
-        existing.subtasks.push({ ...seedSubtask })
-        existingSubtaskIds.add(seedSubtask.id)
-      }
-    }
-
     touchIssueDraft(existing, updatedBy)
     return existing
   }
@@ -436,7 +769,6 @@ const ensureIssueDraft = (
     issueKey,
     issueUrl,
     fields,
-    subtasks: seedSubtasks.slice(0, MAX_SUBTASKS_PER_ISSUE).map((subtask) => ({ ...subtask })),
     updatedBy,
     updatedAt: new Date().toISOString(),
   }
@@ -484,7 +816,7 @@ const ensureSelectedIssueFromShared = (room: RoomRecord, issueId: string, update
     return false
   }
 
-  const subtasks = room.jiraSubtasksByIssueId?.[normalizedIssueId] ?? []
+  const subtasks = getIssueSubtasks(room, normalizedIssueId)
   ensureIssueDraft(
     room,
     normalizedIssueId,
@@ -492,7 +824,16 @@ const ensureSelectedIssueFromShared = (room: RoomRecord, issueId: string, update
     normalizeIssueUrl(entry.issue.url),
     buildWorkspaceSeedFields(entry.issue, entry.group),
     updatedBy,
-    subtasks,
+  )
+  ensureIssueSubtasksEntry(room, normalizedIssueId, subtasks)
+  updateIssueSyncLifecycle(
+    room,
+    normalizedIssueId,
+    normalizeIssueKey(entry.issue.key),
+    normalizeIssueUrl(entry.issue.url),
+    'description',
+    'Description',
+    getIssueBaselineFieldValue(room, normalizedIssueId, 'description') ?? '',
   )
   room.selectedIssueId = normalizedIssueId
   resetOrchestratorView(room, normalizedIssueId)
@@ -657,11 +998,14 @@ const makeEmptySnapshot = (clientId: string): RoomStateSnapshot => ({
   myId: clientId,
   myVote: null,
   orchestratorId: null,
+  settings: createDefaultRoomSettings(),
   orchestratorView: createEmptyOrchestratorView(),
   participants: [],
   issueWorkspace: {
     selectedIssueId: null,
     drafts: [],
+    subtasks: [],
+    sync: [],
     presence: [],
     crdt: [],
   },
@@ -679,6 +1023,7 @@ const normalizeRoom = (raw: unknown): RoomRecord | null => {
     revealed: typeof raw.revealed === 'boolean' ? raw.revealed : defaults.revealed,
     selectedIssueId: typeof raw.selectedIssueId === 'string' ? raw.selectedIssueId : null,
     orchestratorId: typeof raw.orchestratorId === 'string' ? raw.orchestratorId : null,
+    settings: normalizeRoomSettings(raw.settings),
     orchestratorView: isRecord(raw.orchestratorView)
       ? {
           issueId: typeof raw.orchestratorView.issueId === 'string' ? raw.orchestratorView.issueId : null,
@@ -687,16 +1032,51 @@ const normalizeRoom = (raw: unknown): RoomRecord | null => {
         }
       : defaults.orchestratorView,
     issueDrafts: Array.isArray(raw.issueDrafts) ? (clone(raw.issueDrafts) as IssueDraftSnapshot[]) : defaults.issueDrafts,
+    issueSubtasks: normalizeIssueSubtasks(raw.issueSubtasks),
+    issueSync: normalizeIssueSync(raw.issueSync),
     issueCrdt: normalizeIssueCrdt(raw.issueCrdt),
     issuePresence: Array.isArray(raw.issuePresence) ? (clone(raw.issuePresence) as IssuePresenceSnapshot[]) : defaults.issuePresence,
     jiraIssues: raw.jiraIssues ? (clone(raw.jiraIssues) as JiraIssueResult) : null,
-    jiraSubtasksByIssueId: isRecord(raw.jiraSubtasksByIssueId)
-      ? (clone(raw.jiraSubtasksByIssueId) as Record<string, IssueSubtask[]>)
-      : defaults.jiraSubtasksByIssueId,
+    jiraConnection: normalizeJiraConnection(raw.jiraConnection),
     estimatedIssueIds: Array.isArray(raw.estimatedIssueIds)
       ? raw.estimatedIssueIds.map((value) => (typeof value === 'string' ? value : '')).filter(Boolean)
       : defaults.estimatedIssueIds,
   }
+}
+
+const isParticipantStale = (participant: ParticipantRecord, now: number): boolean => now - participant.lastSeenAt > PRESENCE_STALE_AFTER_MS
+
+const cleanupStaleParticipants = async (ctx: MutationCtx, room: RoomRecord, participants: ParticipantRecord[]): Promise<ParticipantRecord[]> => {
+  const now = Date.now()
+  const staleParticipants = participants.filter((participant) => isParticipantStale(participant, now))
+  if (staleParticipants.length === 0) {
+    return participants
+  }
+
+  const staleIds = new Set(staleParticipants.map((participant) => participant.clientId))
+  for (const participant of staleParticipants) {
+    await ctx.db.delete(participant._id as Parameters<typeof ctx.db.delete>[0])
+  }
+
+  room.issuePresence = room.issuePresence
+    .map((entry) => ({
+      ...entry,
+      participantIds: entry.participantIds.filter((participantId) => !staleIds.has(participantId)),
+    }))
+    .filter((entry) => entry.participantIds.length > 0)
+
+  if (room.orchestratorId && staleIds.has(room.orchestratorId)) {
+    const remaining = participants.filter((participant) => !staleIds.has(participant.clientId))
+    room.orchestratorId = remaining[0]?.clientId ?? null
+    resetOrchestratorView(room, room.orchestratorId ? room.selectedIssueId : null)
+  }
+
+  await persistRoom(ctx, room)
+  const remainingParticipants = participants.filter((participant) => !staleIds.has(participant.clientId))
+  if (remainingParticipants.length === 0) {
+    await resetRoomIfEmpty(ctx, room)
+  }
+  return remainingParticipants
 }
 
 const normalizeParticipant = (raw: unknown): ParticipantRecord | null => {
@@ -716,6 +1096,7 @@ const normalizeParticipant = (raw: unknown): ParticipantRecord | null => {
     colorHue: typeof raw.colorHue === 'number' && Number.isFinite(raw.colorHue) ? Math.floor(raw.colorHue) : 210,
     vote: raw.vote === null || (typeof raw.vote === 'string' && allowedVotes.has(raw.vote)) ? (raw.vote as EstimateOption | null) : null,
     isFollowingOrchestrator: raw.isFollowingOrchestrator === true,
+    lastSeenAt: typeof raw.lastSeenAt === 'number' && Number.isFinite(raw.lastSeenAt) ? raw.lastSeenAt : 0,
   }
 }
 
@@ -756,12 +1137,15 @@ const persistRoom = async (ctx: MutationCtx, room: RoomRecord): Promise<void> =>
     revealed: room.revealed,
     selectedIssueId: room.selectedIssueId,
     orchestratorId: room.orchestratorId,
+    settings: room.settings,
     orchestratorView: room.orchestratorView,
     issueDrafts: room.issueDrafts,
+    issueSubtasks: room.issueSubtasks,
+    issueSync: room.issueSync,
     issueCrdt: room.issueCrdt,
     issuePresence: room.issuePresence,
     jiraIssues: room.jiraIssues,
-    jiraSubtasksByIssueId: room.jiraSubtasksByIssueId,
+    jiraConnection: room.jiraConnection,
     estimatedIssueIds: room.estimatedIssueIds,
   })
 }
@@ -811,11 +1195,14 @@ export const snapshot = query({
     base.revealed = room.revealed
     base.myVote = me?.vote ?? null
     base.orchestratorId = room.orchestratorId
+    base.settings = room.settings
     base.orchestratorView = room.orchestratorView ?? createEmptyOrchestratorView()
     base.participants = participantViews
     base.issueWorkspace = {
       selectedIssueId: room.selectedIssueId,
       drafts: clone(Array.isArray(room.issueDrafts) ? room.issueDrafts : []),
+      subtasks: clone(Array.isArray(room.issueSubtasks) ? room.issueSubtasks : []),
+      sync: clone(Array.isArray(room.issueSync) ? room.issueSync : []),
       presence: clone(Array.isArray(room.issuePresence) ? room.issuePresence : []),
       crdt: clone(Array.isArray(room.issueCrdt) ? room.issueCrdt : []),
     }
@@ -841,7 +1228,8 @@ export const sendEvent = mutation({
       ...clone(roomDoc),
       _id: roomDoc._id,
     }
-    const participants = await listParticipants(ctx as QueryCtx)
+    let participants = await listParticipants(ctx as QueryCtx)
+    participants = await cleanupStaleParticipants(ctx as MutationCtx, room, participants)
     const participant = findParticipant(participants, clientId)
 
     switch (event.type) {
@@ -859,7 +1247,7 @@ export const sendEvent = mutation({
         }
 
         if (participant) {
-          await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { name: normalizedName })
+          await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { name: normalizedName, lastSeenAt: Date.now() })
         } else {
           await ctx.db.insert('participants', {
             clientId,
@@ -867,6 +1255,7 @@ export const sendEvent = mutation({
             colorHue: pickDistinctHue(participants),
             vote: null,
             isFollowingOrchestrator: true,
+            lastSeenAt: Date.now(),
           })
           if (!room.orchestratorId && room.jiraIssues) {
             room.orchestratorId = clientId
@@ -875,6 +1264,14 @@ export const sendEvent = mutation({
           }
         }
 
+        return { ok: true }
+      }
+      case 'heartbeat': {
+        if (!participant) {
+          return { ok: true }
+        }
+
+        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { lastSeenAt: Date.now() })
         return { ok: true }
       }
       case 'update_name': {
@@ -887,7 +1284,7 @@ export const sendEvent = mutation({
           return { ok: false, message: 'Display name cannot be empty.' }
         }
 
-        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { name: normalizedName })
+        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { name: normalizedName, lastSeenAt: Date.now() })
         return { ok: true }
       }
       case 'reroll_color': {
@@ -897,6 +1294,7 @@ export const sendEvent = mutation({
 
         await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], {
           colorHue: pickDistinctHue(participants, clientId, participant.colorHue),
+          lastSeenAt: Date.now(),
         })
         return { ok: true }
       }
@@ -909,7 +1307,7 @@ export const sendEvent = mutation({
           return { ok: false, message: 'Vote was rejected.' }
         }
 
-        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { vote: event.vote === null ? null : event.vote })
+        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { vote: event.vote === null ? null : event.vote, lastSeenAt: Date.now() })
         return { ok: true }
       }
       case 'select_issue': {
@@ -925,8 +1323,7 @@ export const sendEvent = mutation({
         }
 
         const fields = normalizeEditorFields(event.fields)
-        const subtasks = room.jiraSubtasksByIssueId?.[issueId] ?? []
-        ensureIssueDraft(room, issueId, issueKey, issueUrl, fields, clientId, subtasks)
+        ensureIssueDraft(room, issueId, issueKey, issueUrl, fields, clientId)
         if (canClientControlTicketFlow(room, clientId)) {
           room.selectedIssueId = issueId
           if (room.orchestratorId === clientId || room.orchestratorId === null) {
@@ -950,8 +1347,11 @@ export const sendEvent = mutation({
           return { ok: false, message: 'Field update was missing required values.' }
         }
 
-        const subtasks = room.jiraSubtasksByIssueId?.[issueId] ?? []
-        const draft = ensureIssueDraft(room, issueId, issueKey, issueUrl, [field], clientId, subtasks)
+        if (!canEditIssue(room, clientId, issueId)) {
+          return { ok: false, message: 'Only the orchestrator can edit tickets outside the shared focus right now.' }
+        }
+
+        const draft = ensureIssueDraft(room, issueId, issueKey, issueUrl, [field], clientId)
         const draftField = ensureDraftField(draft, field.id, field.label)
         if (!draftField) {
           return { ok: false, message: 'Field update was rejected.' }
@@ -960,6 +1360,7 @@ export const sendEvent = mutation({
         draftField.label = normalizeFieldLabel(field.label, draftField.id)
         draftField.value = normalizeIssueText(field.value)
         touchIssueDraft(draft, clientId)
+        updateIssueSyncLifecycle(room, issueId, issueKey, issueUrl, draftField.id, draftField.label, draftField.value)
 
         await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
@@ -974,6 +1375,10 @@ export const sendEvent = mutation({
         const update = decodeBinaryPayload(event.update)
         if (!issueId || !fieldId || !update) {
           return { ok: false, message: 'Collaborative field update was invalid.' }
+        }
+
+        if (!canEditIssue(room, clientId, issueId)) {
+          return { ok: false, message: 'Only the orchestrator can edit tickets outside the shared focus right now.' }
         }
 
         const draft = room.issueDrafts.find((entry) => entry.issueId === issueId)
@@ -1012,6 +1417,7 @@ export const sendEvent = mutation({
         draftField.label = crdtField.label
         draftField.value = normalizeIssueText(text.toString())
         touchIssueDraft(draft, clientId)
+        updateIssueSyncLifecycle(room, issueId, draft.issueKey, draft.issueUrl, draftField.id, draftField.label, draftField.value)
 
         await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
@@ -1029,13 +1435,20 @@ export const sendEvent = mutation({
           return { ok: false, message: 'Subtask title cannot be empty.' }
         }
 
-        const subtasks = room.jiraSubtasksByIssueId?.[issueId] ?? []
-        const draft = ensureIssueDraft(room, issueId, issueKey, issueUrl, [], clientId, subtasks)
-        if (draft.subtasks.length >= MAX_SUBTASKS_PER_ISSUE) {
+        if (!canEditIssue(room, clientId, issueId)) {
+          return { ok: false, message: 'Only the orchestrator can edit tickets outside the shared focus right now.' }
+        }
+
+        ensureIssueDraft(room, issueId, issueKey, issueUrl, [], clientId)
+        const subtaskEntry = ensureIssueSubtasksEntry(room, issueId)
+        if (!subtaskEntry) {
+          return { ok: false, message: 'Subtask update was rejected.' }
+        }
+        if (subtaskEntry.subtasks.length >= MAX_SUBTASKS_PER_ISSUE) {
           return { ok: false, message: 'This ticket already has the maximum number of subtasks.' }
         }
 
-        draft.subtasks.push({
+        subtaskEntry.subtasks.push({
           id: crypto.randomUUID(),
           key: '',
           url: null,
@@ -1044,7 +1457,72 @@ export const sendEvent = mutation({
           done: false,
         })
 
-        touchIssueDraft(draft, clientId)
+        await persistRoom(ctx as MutationCtx, room)
+        return { ok: true }
+      }
+      case 'update_issue_subtask': {
+        if (!participant) {
+          return { ok: false, message: 'Join before updating subtasks.' }
+        }
+
+        const issueId = normalizeIssueId(event.issueId)
+        const subtaskId = normalizeIssueId(event.subtaskId)
+        if (!issueId || !subtaskId || !canEditIssue(room, clientId, issueId)) {
+          return { ok: false, message: 'Subtask update was rejected.' }
+        }
+
+        const subtaskEntry = ensureIssueSubtasksEntry(room, issueId)
+        const subtask = subtaskEntry?.subtasks.find((entry) => entry.id === subtaskId) ?? null
+        if (!subtask) {
+          return { ok: true }
+        }
+
+        if (typeof event.title === 'string') {
+          const title = normalizeSubtaskTitle(event.title)
+          if (!title) {
+            return { ok: false, message: 'Subtask title cannot be empty.' }
+          }
+          subtask.title = title
+        }
+        if (typeof event.description === 'string') {
+          subtask.description = normalizeIssueText(event.description)
+        }
+        if (typeof event.done === 'boolean') {
+          subtask.done = event.done
+        }
+
+        await persistRoom(ctx as MutationCtx, room)
+        return { ok: true }
+      }
+      case 'remove_issue_subtask': {
+        if (!participant) {
+          return { ok: false, message: 'Join before removing subtasks.' }
+        }
+
+        const issueId = normalizeIssueId(event.issueId)
+        const subtaskId = normalizeIssueId(event.subtaskId)
+        if (!issueId || !subtaskId || !canEditIssue(room, clientId, issueId)) {
+          return { ok: false, message: 'Subtask removal was rejected.' }
+        }
+
+        const subtaskEntry = ensureIssueSubtasksEntry(room, issueId)
+        if (!subtaskEntry) {
+          return { ok: true }
+        }
+
+        subtaskEntry.subtasks = subtaskEntry.subtasks.filter((entry) => entry.id !== subtaskId)
+        await persistRoom(ctx as MutationCtx, room)
+        return { ok: true }
+      }
+      case 'set_room_settings': {
+        if (!participant || !canClientControlTicketFlow(room, clientId)) {
+          return { ok: false, message: 'Only the orchestrator can update session settings.' }
+        }
+
+        room.settings = {
+          ...room.settings,
+          ...normalizeRoomSettings(event.settings),
+        }
         await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
@@ -1111,10 +1589,14 @@ export const sendEvent = mutation({
           return { ok: true }
         }
 
-        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { isFollowingOrchestrator: nextState })
+        await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { isFollowingOrchestrator: nextState, lastSeenAt: Date.now() })
         return { ok: true }
       }
       case 'reveal': {
+        if (!participant || !canClientControlTicketFlow(room, clientId)) {
+          return { ok: false, message: 'Only the orchestrator can reveal votes.' }
+        }
+
         if (participants.length === 0 || room.revealed) {
           return { ok: true }
         }
@@ -1124,6 +1606,10 @@ export const sendEvent = mutation({
         return { ok: true }
       }
       case 'next_ticket': {
+        if (!participant || !canClientControlTicketFlow(room, clientId)) {
+          return { ok: false, message: 'Only the orchestrator can advance the room.' }
+        }
+
         if (participants.length === 0) {
           return { ok: true }
         }
@@ -1166,16 +1652,18 @@ export const setJiraIssues = mutation({
     participantId: v.optional(v.string()),
     jiraIssues: v.optional(v.any()),
     jiraSubtasksByIssueId: v.optional(v.any()),
+    jiraConnection: v.optional(v.any()),
   },
   handler: async (
     ctx,
     args:
-      | {
-          participantId?: string
-          jiraIssues?: unknown
-          jiraSubtasksByIssueId?: unknown
-        }
-      | undefined,
+        | {
+            participantId?: string
+            jiraIssues?: unknown
+            jiraSubtasksByIssueId?: unknown
+            jiraConnection?: unknown
+          }
+        | undefined,
   ) => {
     const roomDoc = await ensureRoom(ctx as MutationCtx)
     const room = {
@@ -1190,10 +1678,22 @@ export const setJiraIssues = mutation({
     const jiraIssues = clone(jiraIssuesCandidate) as JiraIssueResult
 
     room.jiraIssues = jiraIssues
-    room.jiraSubtasksByIssueId = isRecord(args?.jiraSubtasksByIssueId)
+    room.jiraConnection = normalizeJiraConnection(args?.jiraConnection)
+    applyEstimatedFlags(room)
+
+    const subtasksByIssueId = isRecord(args?.jiraSubtasksByIssueId)
       ? (clone(args?.jiraSubtasksByIssueId) as Record<string, IssueSubtask[]>)
       : {}
-    applyEstimatedFlags(room)
+    room.issueSubtasks = Object.entries(subtasksByIssueId)
+      .map(([issueId, subtasks]) => ({ issueId: normalizeIssueId(issueId), subtasks }))
+      .filter((entry) => entry.issueId)
+      .map((entry) => ({
+        issueId: entry.issueId,
+        subtasks: entry.subtasks.map((subtask) => normalizeIssueSubtask(subtask)).filter((subtask): subtask is IssueSubtask => subtask !== null),
+      }))
+
+    const activeIssueIds = new Set(flattenSharedIssueEntries(room).map((entry) => entry.issue.id))
+    pruneRoomIssueData(room, activeIssueIds)
 
     const participants = await listParticipants(ctx as QueryCtx)
     const requesterId = typeof args?.participantId === 'string' ? args.participantId.trim() : ''
@@ -1211,6 +1711,115 @@ export const setJiraIssues = mutation({
 
     await persistRoom(ctx as MutationCtx, room)
     return { ok: true, jiraIssues }
+  },
+})
+
+export const getJiraSyncContext = query({
+  args: {
+    participantId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (!identity) {
+      return null
+    }
+
+    const room = normalizeRoom(await (ctx as QueryCtx).db.query('rooms').first())
+    if (!room?.jiraConnection) {
+      return null
+    }
+
+    const participantId = typeof args?.participantId === 'string' ? args.participantId.trim() : ''
+    if (participantId && room.orchestratorId && room.orchestratorId !== participantId) {
+      return null
+    }
+
+    if (room.jiraConnection.ownerTokenIdentifier !== identity.tokenIdentifier) {
+      return null
+    }
+
+    return clone(room.jiraConnection)
+  },
+})
+
+export const markIssueFieldSyncing = mutation({
+  args: {
+    issueId: v.string(),
+    issueKey: v.string(),
+    issueUrl: v.string(),
+    fieldId: v.string(),
+    label: v.string(),
+    value: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const roomDoc = await ensureRoom(ctx as MutationCtx)
+    const room = { ...clone(roomDoc), _id: roomDoc._id }
+    const syncField = ensureIssueSyncField(
+      room,
+      args.issueId,
+      args.issueKey,
+      args.issueUrl,
+      args.fieldId,
+      args.label,
+      args.value,
+    )
+    if (!syncField) {
+      return { ok: false }
+    }
+
+    syncField.status = 'syncing'
+    syncField.value = normalizeIssueText(args.value)
+    syncField.lastAttemptAt = new Date().toISOString()
+    syncField.failureMessage = null
+    await persistRoom(ctx as MutationCtx, room)
+    return { ok: true }
+  },
+})
+
+export const markIssueFieldSyncResult = mutation({
+  args: {
+    issueId: v.string(),
+    issueKey: v.string(),
+    issueUrl: v.string(),
+    fieldId: v.string(),
+    label: v.string(),
+    value: v.string(),
+    ok: v.boolean(),
+    failureMessage: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const roomDoc = await ensureRoom(ctx as MutationCtx)
+    const room = { ...clone(roomDoc), _id: roomDoc._id }
+    const syncField = ensureIssueSyncField(
+      room,
+      args.issueId,
+      args.issueKey,
+      args.issueUrl,
+      args.fieldId,
+      args.label,
+      args.value,
+    )
+    if (!syncField) {
+      return { ok: false }
+    }
+
+    syncField.value = normalizeIssueText(args.value)
+    syncField.lastAttemptAt = new Date().toISOString()
+    if (args.ok) {
+      syncField.status = 'clean'
+      syncField.retryCount = 0
+      syncField.nextRetryAt = null
+      syncField.failureMessage = null
+      syncField.lastSyncedAt = syncField.lastAttemptAt
+    } else {
+      syncField.status = 'failed'
+      syncField.retryCount += 1
+      syncField.nextRetryAt = new Date(Date.now() + getRetryDelayMs(syncField.retryCount)).toISOString()
+      syncField.failureMessage = normalizeIssueText(args.failureMessage, 300) || 'Failed to sync field to Jira.'
+    }
+
+    await persistRoom(ctx as MutationCtx, room)
+    return { ok: true }
   },
 })
 

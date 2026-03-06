@@ -750,6 +750,16 @@ export const loadIssues = action({
       participantId,
       jiraIssues,
       jiraSubtasksByIssueId,
+      jiraConnection: {
+        baseUrl: jiraOrigin,
+        email,
+        apiToken,
+        ticketPrefix,
+        quickFilterFieldIds,
+        ownerTokenIdentifier: identity.tokenIdentifier,
+        ownerName: identity.name ?? identity.email ?? "Facilitator",
+        updatedAt: new Date().toISOString(),
+      },
     });
 
     if (!stored || typeof stored !== "object" || stored.ok !== true) {
@@ -800,27 +810,43 @@ const toJiraFieldValue = (fieldId: string, value: string): unknown => {
 
 export const syncIssueField = action({
   args: {
-    baseUrl: v.string(),
-    email: v.string(),
-    apiToken: v.string(),
+    participantId: v.optional(v.string()),
+    issueId: v.string(),
     issueKey: v.string(),
     fieldId: v.string(),
     value: v.string(),
   },
-  handler: async (_ctx, args): Promise<{ ok: true } | JiraActionError> => {
-    const jiraOrigin = normalizeJiraOrigin(args.baseUrl);
-    const email = args.email.trim();
-    const apiToken = args.apiToken.trim();
+  handler: async (ctx, args): Promise<{ ok: true } | JiraActionError> => {
+    const syncContext = await ctx.runQuery(api.room.getJiraSyncContext, {
+      participantId: normalizeParticipantId(args.participantId),
+    });
+    if (!syncContext) {
+      return { ok: false, message: "Only the signed-in orchestrator can sync Jira changes." };
+    }
+
+    const jiraOrigin = normalizeJiraOrigin(syncContext.baseUrl);
+    const email = syncContext.email.trim();
+    const apiToken = syncContext.apiToken.trim();
+    const issueId = normalizeIssueId(args.issueId);
     const issueKey = normalizeIssueKey(args.issueKey);
     const fieldId = normalizeJiraFieldId(args.fieldId);
     const value = normalizeFieldValue(args.value);
 
-    if (!jiraOrigin || !email || !apiToken || !issueKey || !fieldId) {
+    if (!jiraOrigin || !email || !apiToken || !issueId || !issueKey || !fieldId) {
       return {
         ok: false,
-        message: "Jira URL, email, API token, issue key, and field id are required.",
+        message: "Stored Jira connection, issue, and field details are required.",
       };
     }
+
+    await ctx.runMutation(api.room.markIssueFieldSyncing, {
+      issueId,
+      issueKey,
+      issueUrl: `${jiraOrigin}/browse/${encodeURIComponent(issueKey)}`,
+      fieldId,
+      label: fieldId,
+      value,
+    });
 
     const authorization = encodeBase64(`${email}:${apiToken}`);
     let response: Response;
@@ -847,12 +873,43 @@ export const syncIssueField = action({
         payload = null;
       }
     } catch {
+      await ctx.runMutation(api.room.markIssueFieldSyncResult, {
+        issueId,
+        issueKey,
+        issueUrl: `${jiraOrigin}/browse/${encodeURIComponent(issueKey)}`,
+        fieldId,
+        label: fieldId,
+        value,
+        ok: false,
+        failureMessage: "Could not reach Jira while syncing field updates.",
+      });
       return { ok: false, message: "Could not reach Jira while syncing field updates." };
     }
 
     if (!response.ok) {
-      return { ok: false, message: jiraErrorMessage(response.status, payload) };
+      const message = jiraErrorMessage(response.status, payload);
+      await ctx.runMutation(api.room.markIssueFieldSyncResult, {
+        issueId,
+        issueKey,
+        issueUrl: `${jiraOrigin}/browse/${encodeURIComponent(issueKey)}`,
+        fieldId,
+        label: fieldId,
+        value,
+        ok: false,
+        failureMessage: message,
+      });
+      return { ok: false, message };
     }
+
+    await ctx.runMutation(api.room.markIssueFieldSyncResult, {
+      issueId,
+      issueKey,
+      issueUrl: `${jiraOrigin}/browse/${encodeURIComponent(issueKey)}`,
+      fieldId,
+      label: fieldId,
+      value,
+      ok: true,
+    });
 
     return { ok: true };
   },
