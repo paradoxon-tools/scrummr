@@ -51,6 +51,7 @@ const createEmptyIssueWorkspace = (): RoomStateSnapshot['issueWorkspace'] => ({
   selectedIssueId: null,
   drafts: [],
   presence: [],
+  crdt: [],
 })
 
 const createEmptyOrchestratorView = (): RoomStateSnapshot['orchestratorView'] => ({
@@ -681,9 +682,16 @@ export default function HomePage() {
     }
   }
 
-  const syncIssueFieldDocsFromSnapshot = (drafts: IssueDraftSnapshot[]): void => {
+  const syncIssueFieldDocsFromSnapshot = (workspace: RoomStateSnapshot['issueWorkspace']): void => {
     const activeIssueIds = new Set<string>()
-    for (const draft of drafts) {
+    const crdtFieldsByIssueId = new Map(
+      workspace.crdt.map((entry) => [
+        normalizeIssueId(entry.issueId),
+        new Set(entry.fields.map((field) => normalizeEditorFieldId(field.fieldId)).filter(Boolean)),
+      ]),
+    )
+
+    for (const draft of workspace.drafts) {
       const normalizedIssueId = normalizeIssueId(draft.issueId)
       if (!normalizedIssueId) {
         continue
@@ -693,7 +701,21 @@ export default function HomePage() {
       for (const field of draft.fields) {
         const issueFieldDoc = ensureIssueFieldDoc(draft.issueId, field)
         issueFieldDoc.label = field.label.trim().slice(0, 80) || issueFieldDoc.label
-        replaceIssueFieldDocValue(issueFieldDoc, field.value, CRDT_BOOTSTRAP_ORIGIN)
+        if (!crdtFieldsByIssueId.get(normalizedIssueId)?.has(normalizeEditorFieldId(field.id))) {
+          replaceIssueFieldDocValue(issueFieldDoc, field.value, CRDT_BOOTSTRAP_ORIGIN)
+        }
+      }
+    }
+
+    for (const entry of workspace.crdt) {
+      const normalizedIssueId = normalizeIssueId(entry.issueId)
+      if (!normalizedIssueId) {
+        continue
+      }
+
+      activeIssueIds.add(normalizedIssueId)
+      for (const field of entry.fields) {
+        applyIssueFieldCrdtUpdate(normalizedIssueId, field.fieldId, field.label, field.update, CRDT_BOOTSTRAP_ORIGIN)
       }
     }
 
@@ -1313,7 +1335,7 @@ export default function HomePage() {
         roomStateRef.current = serverEvent.state
         setRoomState(serverEvent.state)
         setJiraIssues(serverEvent.state.jiraIssues)
-        syncIssueFieldDocsFromSnapshot(serverEvent.state.issueWorkspace.drafts)
+        syncIssueFieldDocsFromSnapshot(serverEvent.state.issueWorkspace)
 
         const me = serverEvent.state.participants.find((participant) => participant.id === serverEvent.state.myId)
         if (me) {
@@ -2035,7 +2057,7 @@ export default function HomePage() {
               onAddSubtask={addIssueSubtask}
               getPresenceLabelForTarget={getPresenceLabelForTarget}
               isTargetEditedByOthers={isTargetEditedByOthers}
-              getIssueFieldYText={() => null}
+              getIssueFieldYText={getIssueFieldYText}
               shouldUseMarkdownEditor={shouldUseMarkdownEditor}
               fieldPresenceTargetId={fieldPresenceTargetId}
               ticketWorkspaceRef={(node) => {

@@ -1,6 +1,7 @@
 'use client'
 
 import type { RefCallback } from 'react'
+import type * as Y from 'yjs'
 import CodeMirrorField from '../CodeMirrorField'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -37,7 +38,7 @@ type TicketWorkspaceProps = {
   onAddSubtask: () => void
   getPresenceLabelForTarget: (targetId: string) => string
   isTargetEditedByOthers: (targetId: string) => boolean
-  getIssueFieldYText: (issueId: string, field: IssueEditorField) => unknown
+  getIssueFieldYText: (issueId: string, field: IssueEditorField) => Y.Text | null
   shouldUseMarkdownEditor: (fieldId: string) => boolean
   fieldPresenceTargetId: (fieldId: string) => string
   ticketWorkspaceRef: RefCallback<HTMLElement>
@@ -232,7 +233,7 @@ export default function TicketWorkspace({
                     </div>
                     <CodeMirrorField
                       value={field.value}
-                      yText={null}
+                      yText={field.id === 'description' ? getIssueFieldYText(selectedIssueId, field) : null}
                       minRows={field.id === 'description' ? 6 : 3}
                       busy={editedByOthers}
                       markdownMode={shouldUseMarkdownEditor(field.id)}

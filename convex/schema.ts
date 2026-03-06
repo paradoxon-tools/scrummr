@@ -20,6 +20,7 @@ export default defineSchema({
       scrollTop: v.number(),
     }),
     issueDrafts: v.array(v.any()),
+    issueCrdt: v.array(v.any()),
     issuePresence: v.array(v.any()),
     jiraIssues: v.union(v.any(), v.null()),
     jiraSubtasksByIssueId: v.record(v.string(), v.array(v.any())),

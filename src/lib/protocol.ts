@@ -92,6 +92,11 @@ export type IssueFieldCrdtSnapshot = {
   update: string
 }
 
+export type IssueCrdtSnapshot = {
+  issueId: string
+  fields: IssueFieldCrdtSnapshot[]
+}
+
 export type IssuePresenceSnapshot = {
   issueId: string
   targetId: string
@@ -102,6 +107,7 @@ export type IssueWorkspaceSnapshot = {
   selectedIssueId: string | null
   drafts: IssueDraftSnapshot[]
   presence: IssuePresenceSnapshot[]
+  crdt: IssueCrdtSnapshot[]
 }
 
 export type OrchestratorViewSnapshot = {

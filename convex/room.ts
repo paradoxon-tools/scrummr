@@ -3,8 +3,10 @@ import { v } from "convex/values";
 import type {
   ClientEvent,
   EstimateOption,
+  IssueCrdtSnapshot,
   IssueDraftSnapshot,
   IssueEditorField,
+  IssueFieldCrdtSnapshot,
   IssuePresenceSnapshot,
   IssueSubtask,
   JiraIssue,
@@ -13,6 +15,7 @@ import type {
   OrchestratorViewSnapshot,
   RoomStateSnapshot,
 } from "../src/lib/protocol";
+import * as Y from 'yjs'
 
 type RoomRecord = {
   _id?: unknown;
@@ -21,6 +24,7 @@ type RoomRecord = {
   orchestratorId: string | null;
   orchestratorView: OrchestratorViewSnapshot;
   issueDrafts: IssueDraftSnapshot[];
+  issueCrdt: IssueCrdtSnapshot[];
   issuePresence: IssuePresenceSnapshot[];
   jiraIssues: JiraIssueResult | null;
   jiraSubtasksByIssueId: Record<string, IssueSubtask[]>;
@@ -67,8 +71,10 @@ const ISSUE_URL_MAX_LENGTH = 600
 const SUBTASK_TITLE_MAX_LENGTH = 240
 const MAX_SUBTASKS_PER_ISSUE = 100
 const MAX_ISSUE_FIELDS_PER_DRAFT = 256
+const MAX_ISSUE_CRDT_FIELDS_PER_ISSUE = 32
 const ISSUE_PRESENCE_TARGET_ID_MAX_LENGTH = 120
 const MAX_ORCHESTRATOR_SCROLL_TOP = 2_000_000
+const CRDT_UPDATE_MAX_BYTES = 1024 * 256
 
 const createEmptyOrchestratorView = (): OrchestratorViewSnapshot => ({
   issueId: null,
@@ -82,6 +88,7 @@ const createDefaultRoom = (): Omit<RoomRecord, '_id'> => ({
   orchestratorId: null,
   orchestratorView: createEmptyOrchestratorView(),
   issueDrafts: [],
+  issueCrdt: [],
   issuePresence: [],
   jiraIssues: null,
   jiraSubtasksByIssueId: {},
@@ -125,6 +132,28 @@ const normalizeIssuePresenceTargetId = (value: unknown) => {
     .replace(/[^a-z0-9:._-]/g, '_')
     .slice(0, ISSUE_PRESENCE_TARGET_ID_MAX_LENGTH)
 }
+const decodeBinaryPayload = (value: unknown): Uint8Array | null => {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    const payload = Buffer.from(trimmed, 'base64')
+    if (!payload.length || payload.length > CRDT_UPDATE_MAX_BYTES) {
+      return null
+    }
+    return new Uint8Array(payload)
+  } catch {
+    return null
+  }
+}
+
+const encodeBinaryPayload = (payload: Uint8Array): string => Buffer.from(payload).toString('base64')
 const normalizeScrollTop = (value: unknown) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return 0
@@ -177,6 +206,52 @@ const normalizeEditorFields = (value: unknown): IssueEditorField[] => {
 }
 
 const normalizeSubtaskTitle = (value: unknown) => normalizeIssueText(value, SUBTASK_TITLE_MAX_LENGTH).trim()
+
+const normalizeIssueFieldCrdtSnapshot = (value: unknown): IssueFieldCrdtSnapshot | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const fieldId = normalizeFieldId(value.fieldId)
+  const update = typeof value.update === 'string' ? value.update.trim() : ''
+  if (!fieldId || !update || !decodeBinaryPayload(update)) {
+    return null
+  }
+
+  return {
+    fieldId,
+    label: normalizeFieldLabel(value.label, fieldId),
+    update,
+  }
+}
+
+const normalizeIssueCrdt = (value: unknown): IssueCrdtSnapshot[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const entries = new Map<string, IssueCrdtSnapshot>()
+  for (const candidate of value) {
+    if (!isRecord(candidate)) {
+      continue
+    }
+
+    const issueId = normalizeIssueId(candidate.issueId)
+    if (!issueId) {
+      continue
+    }
+
+    const fields = Array.isArray(candidate.fields)
+      ? candidate.fields
+          .map((field) => normalizeIssueFieldCrdtSnapshot(field))
+          .filter((field): field is IssueFieldCrdtSnapshot => field !== null)
+          .slice(0, MAX_ISSUE_CRDT_FIELDS_PER_ISSUE)
+      : []
+    entries.set(issueId, { issueId, fields })
+  }
+
+  return [...entries.values()]
+}
 
 const hueDistance = (a: number, b: number) => {
   const diff = Math.abs(a - b) % 360
@@ -258,6 +333,47 @@ const ensureDraftField = (draft: IssueDraftSnapshot, fieldId: string, label: str
   }
   draft.fields.push(nextField)
   return nextField
+}
+
+const ensureIssueCrdtEntry = (room: RoomRecord, issueId: string): IssueCrdtSnapshot | null => {
+  const normalizedIssueId = normalizeIssueId(issueId)
+  if (!normalizedIssueId) {
+    return null
+  }
+
+  const existing = room.issueCrdt.find((entry) => entry.issueId === normalizedIssueId)
+  if (existing) {
+    return existing
+  }
+
+  const entry = { issueId: normalizedIssueId, fields: [] }
+  room.issueCrdt.push(entry)
+  return entry
+}
+
+const ensureIssueCrdtField = (entry: IssueCrdtSnapshot, fieldId: string, label: string): IssueFieldCrdtSnapshot | null => {
+  const normalizedFieldId = normalizeFieldId(fieldId)
+  if (!normalizedFieldId) {
+    return null
+  }
+
+  const existing = entry.fields.find((candidate) => candidate.fieldId === normalizedFieldId)
+  if (existing) {
+    existing.label = normalizeFieldLabel(label, existing.label || normalizedFieldId)
+    return existing
+  }
+
+  if (entry.fields.length >= MAX_ISSUE_CRDT_FIELDS_PER_ISSUE) {
+    return null
+  }
+
+  const field = {
+    fieldId: normalizedFieldId,
+    label: normalizeFieldLabel(label, normalizedFieldId),
+    update: '',
+  }
+  entry.fields.push(field)
+  return field
 }
 
 const ensureIssueDraft = (
@@ -547,6 +663,7 @@ const makeEmptySnapshot = (clientId: string): RoomStateSnapshot => ({
     selectedIssueId: null,
     drafts: [],
     presence: [],
+    crdt: [],
   },
   jiraIssues: null,
 })
@@ -570,6 +687,7 @@ const normalizeRoom = (raw: unknown): RoomRecord | null => {
         }
       : defaults.orchestratorView,
     issueDrafts: Array.isArray(raw.issueDrafts) ? (clone(raw.issueDrafts) as IssueDraftSnapshot[]) : defaults.issueDrafts,
+    issueCrdt: normalizeIssueCrdt(raw.issueCrdt),
     issuePresence: Array.isArray(raw.issuePresence) ? (clone(raw.issuePresence) as IssuePresenceSnapshot[]) : defaults.issuePresence,
     jiraIssues: raw.jiraIssues ? (clone(raw.jiraIssues) as JiraIssueResult) : null,
     jiraSubtasksByIssueId: isRecord(raw.jiraSubtasksByIssueId)
@@ -640,6 +758,7 @@ const persistRoom = async (ctx: MutationCtx, room: RoomRecord): Promise<void> =>
     orchestratorId: room.orchestratorId,
     orchestratorView: room.orchestratorView,
     issueDrafts: room.issueDrafts,
+    issueCrdt: room.issueCrdt,
     issuePresence: room.issuePresence,
     jiraIssues: room.jiraIssues,
     jiraSubtasksByIssueId: room.jiraSubtasksByIssueId,
@@ -698,6 +817,7 @@ export const snapshot = query({
       selectedIssueId: room.selectedIssueId,
       drafts: clone(Array.isArray(room.issueDrafts) ? room.issueDrafts : []),
       presence: clone(Array.isArray(room.issuePresence) ? room.issuePresence : []),
+      crdt: clone(Array.isArray(room.issueCrdt) ? room.issueCrdt : []),
     }
     base.jiraIssues = room.jiraIssues ? clone(room.jiraIssues) : null
     return base
@@ -845,6 +965,55 @@ export const sendEvent = mutation({
         return { ok: true }
       }
       case 'issue_crdt_delta': {
+        if (!participant) {
+          return { ok: false, message: 'Join before collaborating on ticket descriptions.' }
+        }
+
+        const issueId = normalizeIssueId(event.issueId)
+        const fieldId = normalizeFieldId(event.fieldId)
+        const update = decodeBinaryPayload(event.update)
+        if (!issueId || !fieldId || !update) {
+          return { ok: false, message: 'Collaborative field update was invalid.' }
+        }
+
+        const draft = room.issueDrafts.find((entry) => entry.issueId === issueId)
+        if (!draft) {
+          return { ok: true }
+        }
+
+        const draftField = ensureDraftField(draft, fieldId, event.label)
+        const crdtEntry = ensureIssueCrdtEntry(room, issueId)
+        if (!draftField || !crdtEntry) {
+          return { ok: false, message: 'Collaborative field update was rejected.' }
+        }
+
+        const crdtField = ensureIssueCrdtField(crdtEntry, fieldId, event.label)
+        if (!crdtField) {
+          return { ok: false, message: 'Collaborative field update was rejected.' }
+        }
+
+        const doc = new Y.Doc()
+        const text = doc.getText('content')
+        const existingUpdate = decodeBinaryPayload(crdtField.update)
+        if (existingUpdate) {
+          Y.applyUpdate(doc, existingUpdate)
+        } else if (draftField.value) {
+          text.insert(0, draftField.value)
+        }
+
+        try {
+          Y.applyUpdate(doc, update)
+        } catch {
+          return { ok: false, message: 'Collaborative field update could not be applied.' }
+        }
+
+        crdtField.label = normalizeFieldLabel(event.label, draftField.label || fieldId)
+        crdtField.update = encodeBinaryPayload(Y.encodeStateAsUpdate(doc))
+        draftField.label = crdtField.label
+        draftField.value = normalizeIssueText(text.toString())
+        touchIssueDraft(draft, clientId)
+
+        await persistRoom(ctx as MutationCtx, room)
         return { ok: true }
       }
       case 'add_issue_subtask': {
