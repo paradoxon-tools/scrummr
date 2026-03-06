@@ -24,7 +24,7 @@ type JiraIssueResult = {
   }>
 }
 
-const JIRA_STORAGE_KEY = 'scrummer.jira_config'
+const JIRA_STORAGE_KEY = 'scrummr.jira_config'
 
 const convexBackendUrl =
   import.meta.env.VITE_CONVEX_URL?.trim() ||

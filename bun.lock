@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "scrummer",
+      "name": "scrummr",
       "dependencies": {
         "@clerk/tanstack-react-start": "^0.27.14",
         "@codemirror/commands": "^6.10.2",

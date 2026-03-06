@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 
 type ThemeMode = 'light' | 'dark'
 
-const STORAGE_KEY = 'scrummer.theme_mode'
+const STORAGE_KEY = 'scrummr.theme_mode'
 
 const applyThemeMode = (mode: ThemeMode): void => {
   document.documentElement.dataset.theme = mode

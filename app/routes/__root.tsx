@@ -10,7 +10,7 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Scrummer" },
+      { title: "Scrummr" },
       { name: "description", content: "Shared planning poker with Jira ticket workspace" },
     ],
     links: [
@@ -82,7 +82,7 @@ function AppChrome({ children }: { children: ReactNode }) {
               <path d="M10 2L3 7v9a2 2 0 002 2h10a2 2 0 002-2V7l-7-5z" opacity="0.15" />
               <path d="M10 2L3 7v9a2 2 0 002 2h10a2 2 0 002-2V7l-7-5z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
             </svg>
-            Scrummer
+            Scrummr
           </Link>
           <span className="mx-1 text-[var(--color-text-tertiary)]">/</span>
           <Link

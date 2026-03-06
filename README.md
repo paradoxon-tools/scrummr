@@ -1,4 +1,4 @@
-# Scrummer v1
+# Scrummr v1
 
 Single-room scrum planning poker app built with TanStack Start + Convex.
 
@@ -88,7 +88,7 @@ Notes:
 
 ## Jira integration notes
 
-- Scrummer loads/syncs Jira through Convex actions (`convex/jira.ts`).
+- Scrummr loads/syncs Jira through Convex actions (`convex/jira.ts`).
 - The Jira request uses the ticket prefix (project key, for example `TEAM`) to load tickets, then groups them by sprint so each current/future sprint appears as its own bucket.
 - Successful Jira loads are stored in Convex room state so late joiners and other participants share the same ticket buckets.
 - Ticket editor changes stay local to the room state and are broadcast to all connected users (no write-back to Jira yet).

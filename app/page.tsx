@@ -43,8 +43,8 @@ type IssueFieldDoc = {
   onUpdate: (update: Uint8Array, origin: unknown) => void
 }
 
-const STORAGE_KEY = 'scrummer.display_name'
-const JIRA_STORAGE_KEY = 'scrummer.jira_config'
+const STORAGE_KEY = 'scrummr.display_name'
+const JIRA_STORAGE_KEY = 'scrummr.jira_config'
 const CRDT_UPDATE_MAX_BYTES = 1024 * 256
 const SESSION_JOIN_RETRY_DELAY_MS = 1500
 const CRDT_REMOTE_ORIGIN = Symbol('crdt-remote')
