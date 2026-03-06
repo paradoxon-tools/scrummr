@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useAction } from 'convex/react'
+import { useAction, useQuery } from 'convex/react'
 import * as Y from 'yjs'
 import { api } from '../convex/_generated/api.js'
 import JoinView from '../components/planning/JoinView'
@@ -25,15 +25,6 @@ import {
   type ServerEvent,
 } from '../src/lib/protocol'
 
-type JiraConfig = {
-  baseUrl: string
-  email: string
-  apiToken: string
-  ticketPrefix: string
-}
-
-type StoredJiraConfig = Pick<JiraConfig, 'baseUrl' | 'ticketPrefix'>
-
 type IssueFieldDoc = {
   issueId: string
   fieldId: string
@@ -44,7 +35,6 @@ type IssueFieldDoc = {
 }
 
 const STORAGE_KEY = 'scrummr.display_name'
-const JIRA_STORAGE_KEY = 'scrummr.jira_config'
 const CRDT_UPDATE_MAX_BYTES = 1024 * 256
 const SESSION_JOIN_RETRY_DELAY_MS = 1500
 const CRDT_REMOTE_ORIGIN = Symbol('crdt-remote')
@@ -82,20 +72,11 @@ const createEmptyState = (): RoomStateSnapshot => ({
   jiraIssues: null,
 })
 
-const createDefaultJiraConfig = (): JiraConfig => ({
-  baseUrl: '',
-  email: '',
-  apiToken: '',
-  ticketPrefix: '',
-})
-
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 const toStringOrEmpty = (value: unknown): string => (typeof value === 'string' ? value : '')
 const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
 const normalizeIssueId = (value: string): string => value.trim().slice(0, 80)
 const normalizeIssueKey = (value: string): string => value.trim().toUpperCase().slice(0, 40)
-
-const normalizeTicketPrefix = (value: string): string => value.toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 20)
 
 const normalizeEditorText = (value: string, maxLength = 16000): string => value.replace(/\r\n/g, '\n').slice(0, maxLength)
 const normalizeEditorFieldId = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 80)
@@ -441,13 +422,12 @@ const decodeBinaryPayload = (value: string): Uint8Array | null => {
 }
 
 export default function HomePage() {
-  const loadJiraIssuesAction = useAction(api.jira.loadIssues)
   const syncIssueFieldAction = useAction(api.jira.syncIssueField)
+  const canCurrentUserSyncJira = useQuery(api.room.canCurrentUserSyncJira, {}) ?? false
 
   const [roomState, setRoomState] = useState<RoomStateSnapshot>(createEmptyState)
   const roomStateRef = useRef(roomState)
 
-  const [jiraConfig, setJiraConfig] = useState<JiraConfig>(createDefaultJiraConfig)
   const [jiraIssues, setJiraIssues] = useState<JiraIssueResult | null>(null)
   const jiraIssuesRef = useRef<JiraIssueResult | null>(null)
 
@@ -460,16 +440,12 @@ export default function HomePage() {
   const [isSocketConnected, setIsSocketConnected] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isProfileEditing, setIsProfileEditing] = useState(false)
-  const [isJiraLoading, setIsJiraLoading] = useState(false)
-  const [isJiraConfigCollapsed, setIsJiraConfigCollapsed] = useState(false)
   const [isRawTicketDataOpen, setIsRawTicketDataOpen] = useState(false)
   const [isCrdtDebugOpen, setIsCrdtDebugOpen] = useState(false)
   const [localSelectedIssueIdOverride, setLocalSelectedIssueIdOverride] = useState<string | null>(null)
   const [isFollowingOrchestrator, setIsFollowingOrchestrator] = useState(true)
   const [activeQuickFilterBadgeId, setActiveQuickFilterBadgeId] = useState<string | null>(null)
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
-
-  const [hasAutoCollapsedJiraConfig, setHasAutoCollapsedJiraConfig] = useState(false)
 
   const socketRef = useRef<RoomConnection | null>(null)
   const isConnectedRef = useRef(false)
@@ -480,8 +456,6 @@ export default function HomePage() {
   const isFollowingOrchestratorRef = useRef(true)
   const localSelectedIssueIdOverrideRef = useRef<string | null>(null)
   const profileSyncTimerRef = useRef<number | undefined>(undefined)
-  const jiraRequestCounterRef = useRef(0)
-  const jiraConfigRef = useRef<JiraConfig>(createDefaultJiraConfig())
   const jiraFieldBaselineByIssueRef = useRef<Map<string, Map<string, string>>>(new Map())
   const jiraIssueKeyByIdRef = useRef<Map<string, string>>(new Map())
   const jiraFieldSyncInFlightRef = useRef<Set<string>>(new Set())
@@ -533,10 +507,6 @@ export default function HomePage() {
   useEffect(() => {
     jiraIssuesRef.current = jiraIssues
   }, [jiraIssues])
-
-  useEffect(() => {
-    jiraConfigRef.current = jiraConfig
-  }, [jiraConfig])
 
   const send = (event: ClientEvent): void => {
     const socket = socketRef.current
@@ -1047,7 +1017,7 @@ export default function HomePage() {
   }
 
   const flushPendingJiraSyncs = async (): Promise<void> => {
-    if (!isConnectedRef.current || !isCurrentUserOrchestrator()) {
+    if (!isConnectedRef.current || !canCurrentUserSyncJira) {
       return
     }
 
@@ -1214,137 +1184,6 @@ export default function HomePage() {
 
     window.localStorage.setItem(STORAGE_KEY, normalized)
     return normalized
-  }
-
-  const readStoredJiraConfig = (): StoredJiraConfig | null => {
-    const raw = window.localStorage.getItem(JIRA_STORAGE_KEY)
-    if (!raw) {
-      return null
-    }
-
-    try {
-      const parsed: unknown = JSON.parse(raw)
-      if (!isRecord(parsed)) {
-        return null
-      }
-
-      const normalized: JiraConfig = {
-        baseUrl: toStringOrEmpty(parsed.baseUrl).trim(),
-        email: '',
-        apiToken: '',
-        ticketPrefix: normalizeTicketPrefix(toStringOrEmpty(parsed.ticketPrefix) || toStringOrEmpty(parsed.boardId)),
-      }
-
-      if (!normalized.baseUrl || !normalized.ticketPrefix) {
-        return null
-      }
-
-      return {
-        baseUrl: normalized.baseUrl,
-        ticketPrefix: normalized.ticketPrefix,
-      }
-    } catch {
-      return null
-    }
-  }
-
-  const saveJiraConfigLocally = (value: JiraConfig): void => {
-    const normalized = {
-      ...value,
-      baseUrl: value.baseUrl.trim(),
-      email: value.email.trim(),
-      apiToken: value.apiToken.trim(),
-      ticketPrefix: normalizeTicketPrefix(value.ticketPrefix),
-    }
-
-    if (!normalized.baseUrl && !normalized.ticketPrefix) {
-      window.localStorage.removeItem(JIRA_STORAGE_KEY)
-      return
-    }
-
-    const stored: StoredJiraConfig = {
-      baseUrl: normalized.baseUrl,
-      ticketPrefix: normalized.ticketPrefix,
-    }
-    window.localStorage.setItem(JIRA_STORAGE_KEY, JSON.stringify(stored))
-  }
-
-  const normalizeJiraConfig = (value: JiraConfig): JiraConfig => ({
-    baseUrl: value.baseUrl.trim(),
-    email: value.email.trim(),
-    apiToken: value.apiToken.trim(),
-    ticketPrefix: normalizeTicketPrefix(value.ticketPrefix),
-  })
-
-  const loadJiraIssues = async (): Promise<void> => {
-    const normalized = normalizeJiraConfig(jiraConfig)
-    setJiraConfig(normalized)
-    saveJiraConfigLocally(normalized)
-
-    if (!normalized.baseUrl || !normalized.email || !normalized.apiToken || !normalized.ticketPrefix) {
-      setJiraError('Add Jira URL, email, API token, and ticket prefix first.')
-      setJiraMessage('')
-      return
-    }
-
-    const requestId = ++jiraRequestCounterRef.current
-    setIsJiraLoading(true)
-    setJiraError('')
-    setJiraMessage('')
-
-    try {
-      const result = await loadJiraIssuesAction({
-        baseUrl: normalized.baseUrl,
-        email: normalized.email,
-        apiToken: normalized.apiToken,
-        ticketPrefix: normalized.ticketPrefix,
-        participantId: roomStateRef.current.myId || undefined,
-      })
-      if (requestId !== jiraRequestCounterRef.current) {
-        return
-      }
-
-      if (!result.ok) {
-        setJiraError(result.message || 'Failed to load Jira tickets.')
-        setJiraMessage('')
-        return
-      }
-
-      if (!result.jiraIssues) {
-        setJiraError('Jira issues were not returned by the backend.')
-        setJiraMessage('')
-        return
-      }
-
-      setJiraIssues(result.jiraIssues)
-      const total = result.jiraIssues.groups.reduce((count: number, group: JiraIssueGroup) => count + group.issues.length, 0)
-      setJiraError('')
-      setJiraMessage(
-        total > 0
-          ? `Loaded ${total} tickets grouped into ${result.jiraIssues.groups.length} sprint buckets.`
-          : 'No Jira tickets found for current/future sprints or backlog.',
-      )
-    } catch {
-      if (requestId !== jiraRequestCounterRef.current) {
-        return
-      }
-
-      setJiraError('Could not reach the backend Jira endpoint.')
-      setJiraMessage('')
-    } finally {
-      if (requestId === jiraRequestCounterRef.current) {
-        setIsJiraLoading(false)
-      }
-    }
-  }
-
-  const handleJiraConfigInput = (nextConfig: JiraConfig): void => {
-    const normalized = {
-      ...nextConfig,
-      ticketPrefix: normalizeTicketPrefix(nextConfig.ticketPrefix),
-    }
-    setJiraConfig(normalized)
-    saveJiraConfigLocally(normalized)
   }
 
   const connect = (explicitName?: string): void => {
@@ -1789,11 +1628,6 @@ export default function HomePage() {
       connect(storedName)
     }
 
-    const storedJiraConfig = readStoredJiraConfig()
-    if (storedJiraConfig) {
-      setJiraConfig((current) => ({ ...current, ...storedJiraConfig }))
-    }
-
     return () => {
       window.clearTimeout(profileSyncTimerRef.current)
       window.clearInterval(heartbeatTimerRef.current)
@@ -1891,22 +1725,6 @@ export default function HomePage() {
     setActiveQuickFilterBadgeId(null)
   }, [jiraIssues, activeQuickFilterBadgeId])
 
-  const loadedJiraTicketCount = useMemo(
-    () => (jiraIssues ? jiraIssues.groups.reduce((count, group) => count + group.issues.length, 0) : 0),
-    [jiraIssues],
-  )
-
-  useEffect(() => {
-    if (loadedJiraTicketCount > 0 && !hasAutoCollapsedJiraConfig) {
-      setIsJiraConfigCollapsed(true)
-      setHasAutoCollapsedJiraConfig(true)
-    }
-    if (loadedJiraTicketCount === 0) {
-      setIsJiraConfigCollapsed(false)
-      setHasAutoCollapsedJiraConfig(false)
-    }
-  }, [loadedJiraTicketCount, hasAutoCollapsedJiraConfig])
-
   useEffect(() => {
     if (isConnected && canFollowCurrentOrchestrator() && isFollowingOrchestrator && middleScrollRef.current) {
       window.requestAnimationFrame(() => applyOrchestratorScrollSync())
@@ -1926,11 +1744,12 @@ export default function HomePage() {
   ])
 
   useEffect(() => {
-    if (!isConnected || !isCurrentUserOrchestrator()) {
+    if (!isConnected || !canCurrentUserSyncJira) {
       return
     }
     void flushPendingJiraSyncs()
   }, [
+    canCurrentUserSyncJira,
     isConnected,
     roomState.issueWorkspace.sync,
     roomState.issueWorkspace.drafts,

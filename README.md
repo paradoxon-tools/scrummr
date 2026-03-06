@@ -9,7 +9,7 @@ Single-room scrum planning poker app built with TanStack Start + Convex.
 - Real-time multi-user voting in one shared room.
 - Any participant can reveal estimates for everyone at once.
 - After reveal, the action button becomes `Next ticket` to reset the round.
-- Jira integration panel to configure credentials + ticket prefix and load tickets grouped by their assigned sprint (current/future) plus unsprinted backlog candidates.
+- Jira OAuth connection for facilitators, plus session-level ticket prefix/quick-filter controls to load tickets grouped by their assigned sprint (current/future) plus unsprinted backlog candidates.
 - Jira loads are shared at room level: once one participant refreshes tickets, everyone sees the same list.
 - Click any Jira ticket to open a shared in-room ticket editor with local field edits and subtasks.
 - Live field/subtask presence indicators show who is currently editing what.
@@ -27,9 +27,12 @@ Set your environment variables:
 ```bash
 # .env.local
 VITE_CONVEX_URL=https://<your-deployment>.convex.cloud
+VITE_CONVEX_SITE_URL=https://<your-deployment>.convex.site
 VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
 CLERK_SECRET_KEY=sk_test_...
 CLERK_JWT_ISSUER_DOMAIN=https://<your-clerk-domain>
+ATLASSIAN_OAUTH_CLIENT_ID=...
+ATLASSIAN_OAUTH_CLIENT_SECRET=...
 ```
 
 Run frontend + Convex together:
@@ -53,9 +56,11 @@ The frontend runs on `http://localhost:5173`.
 ## Optional configuration
 
 - `VITE_CONVEX_URL` points the app to your Convex deployment.
+- `VITE_CONVEX_SITE_URL` points OAuth callbacks at your Convex HTTP endpoint.
 - `VITE_CLERK_PUBLISHABLE_KEY` is required for Clerk in the frontend.
 - `CLERK_SECRET_KEY` is required for Clerk server operations.
 - `CLERK_JWT_ISSUER_DOMAIN` is required by Convex auth config.
+- `ATLASSIAN_OAUTH_CLIENT_ID` and `ATLASSIAN_OAUTH_CLIENT_SECRET` enable Jira OAuth.
 
 ## Deploy to Vercel with Convex
 
@@ -89,9 +94,9 @@ Notes:
 ## Jira integration notes
 
 - Scrummr loads/syncs Jira through Convex actions (`convex/jira.ts`).
+- Facilitators connect Jira once through Atlassian OAuth. Access and refresh tokens stay server-side in Convex.
 - The Jira request uses the ticket prefix (project key, for example `TEAM`) to load tickets, then groups them by sprint so each current/future sprint appears as its own bucket.
 - Successful Jira loads are stored in Convex room state so late joiners and other participants share the same ticket buckets.
-- Ticket editor changes stay local to the room state and are broadcast to all connected users (no write-back to Jira yet).
+- Description edits can sync back to Jira for the connected facilitator account.
 - Presence badges in the editor are local-collaboration hints and are cleared when users blur fields or disconnect.
-- Jira credentials are stored in your browser `localStorage` for convenience in this prototype.
-- For Jira Cloud, use your Atlassian email and an API token.
+- Room state stores only non-secret Jira session metadata. Browser storage keeps only non-secret dashboard session prefs.
