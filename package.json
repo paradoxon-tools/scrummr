@@ -10,7 +10,7 @@
     "dev:web": "vite dev --port 5173",
     "dev:convex": "bunx convex dev",
     "build": "vite build",
-    "build:vercel": "node ./sync-convex-preview-env.mjs && bunx convex deploy --cmd \"bun run build\" --cmd-url-env-var-name VITE_CONVEX_URL",
+    "build:vercel": "node ./build-vercel.mjs",
     "start": "vite preview --port 5173",
     "check": "vite build && tsc --noEmit",
     "typecheck": "tsc --noEmit"
