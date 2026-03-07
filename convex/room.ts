@@ -21,6 +21,11 @@ import type {
 } from "../src/lib/protocol";
 import * as Y from 'yjs'
 
+type IdentityLike = {
+  tokenIdentifier: string
+  subject?: string | null
+}
+
 type RoomRecord = {
   _id?: unknown;
   revealed: boolean;
@@ -35,12 +40,12 @@ type RoomRecord = {
   issuePresence: IssuePresenceSnapshot[];
   jiraIssues: JiraIssueResult | null;
   jiraConnection: {
+    connectionId: string;
     baseUrl: string;
-    email: string;
-    apiToken: string;
+    siteName: string;
     ticketPrefix: string;
     quickFilterFieldIds: string[];
-    ownerTokenIdentifier: string;
+    ownerUserId: string;
     ownerName: string;
     updatedAt: string;
   } | null;
@@ -123,6 +128,11 @@ const createDefaultRoom = (): Omit<RoomRecord, '_id'> => ({
 })
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+
+const getIdentityUserId = (identity: IdentityLike): string =>
+  typeof identity.subject === 'string' && identity.subject.trim()
+    ? identity.subject.trim().slice(0, 200)
+    : identity.tokenIdentifier.trim().slice(0, 200)
 
 const normalizeName = (value: unknown) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 40) : '')
 const normalizeIssueId = (value: unknown) => (typeof value === 'string' ? value.trim().slice(0, FIELD_ID_MAX_LENGTH) : '')
@@ -372,23 +382,23 @@ const normalizeJiraConnection = (value: unknown): RoomRecord['jiraConnection'] =
     return null
   }
 
+  const connectionId = normalizeIssueId(value.connectionId)
   const baseUrl = normalizeIssueUrl(value.baseUrl)
-  const email = normalizeIssueText(value.email, 200).trim()
-  const apiToken = normalizeIssueText(value.apiToken, 400).trim()
-  const ownerTokenIdentifier = normalizeIssueText(value.ownerTokenIdentifier, 200).trim()
-  if (!baseUrl || !email || !apiToken || !ownerTokenIdentifier) {
+  const siteName = normalizeIssueText(value.siteName, 120).trim()
+  const ownerUserId = normalizeIssueText(value.ownerUserId, 200).trim()
+  if (!connectionId || !baseUrl || !siteName || !ownerUserId) {
     return null
   }
 
   return {
+    connectionId,
     baseUrl,
-    email,
-    apiToken,
+    siteName,
     ticketPrefix: normalizeIssueKey(value.ticketPrefix),
     quickFilterFieldIds: Array.isArray(value.quickFilterFieldIds)
       ? value.quickFilterFieldIds.map((entry) => normalizeFieldId(entry)).filter(Boolean)
       : [],
-    ownerTokenIdentifier,
+    ownerUserId,
     ownerName: normalizeIssueText(value.ownerName, 120).trim(),
     updatedAt: normalizeIsoStringOrNull(value.updatedAt) ?? new Date().toISOString(),
   }
@@ -1729,16 +1739,81 @@ export const getJiraSyncContext = query({
       return null
     }
 
-    const participantId = typeof args?.participantId === 'string' ? args.participantId.trim() : ''
-    if (participantId && room.orchestratorId && room.orchestratorId !== participantId) {
-      return null
-    }
-
-    if (room.jiraConnection.ownerTokenIdentifier !== identity.tokenIdentifier) {
+    if (room.jiraConnection.ownerUserId !== getIdentityUserId(identity)) {
       return null
     }
 
     return clone(room.jiraConnection)
+  },
+})
+
+export const canCurrentUserSyncJira = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (!identity) {
+      return false
+    }
+
+    const room = normalizeRoom(await (ctx as QueryCtx).db.query('rooms').first())
+    return room?.jiraConnection?.ownerUserId === getIdentityUserId(identity)
+  },
+})
+
+export const claimOwnerOrchestrator = mutation({
+  args: {
+    clientId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (!identity) {
+      return { ok: false, message: 'Sign in before claiming the orchestrator role.' }
+    }
+
+    const roomDoc = await ensureRoom(ctx as MutationCtx)
+    const room = { ...clone(roomDoc), _id: roomDoc._id }
+    if (!room.jiraConnection || room.jiraConnection.ownerUserId !== getIdentityUserId(identity)) {
+      return { ok: false, message: 'Only the Jira-connected facilitator can claim the orchestrator role.' }
+    }
+
+    const clientId = normalizeIssueId(args.clientId)
+    if (!clientId) {
+      return { ok: false, message: 'Participant id is invalid.' }
+    }
+
+    const participants = await listParticipants(ctx as QueryCtx)
+    if (!participants.some((participant) => participant.clientId === clientId)) {
+      return { ok: false, message: 'Join the room before claiming orchestrator.' }
+    }
+
+    if (room.orchestratorId === clientId) {
+      return { ok: true }
+    }
+
+    room.orchestratorId = clientId
+    resetOrchestratorView(room, room.selectedIssueId)
+    await persistRoom(ctx as MutationCtx, room)
+    return { ok: true }
+  },
+})
+
+export const clearJiraConnectionForOwner = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (!identity) {
+      return { ok: false }
+    }
+
+    const roomDoc = await ensureRoom(ctx as MutationCtx)
+    const room = { ...clone(roomDoc), _id: roomDoc._id }
+    if (!room.jiraConnection || room.jiraConnection.ownerUserId !== getIdentityUserId(identity)) {
+      return { ok: true }
+    }
+
+    room.jiraConnection = null
+    await persistRoom(ctx as MutationCtx, room)
+    return { ok: true }
   },
 })
 

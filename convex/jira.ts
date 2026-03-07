@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { IssueSubtask, JiraIssue, JiraIssueGroup, JiraIssueResult, JiraSprint } from "../src/lib/protocol";
 
 type JiraIssueWithSprint = JiraIssue & {
@@ -11,6 +11,51 @@ type JiraIssueWithSprint = JiraIssue & {
 type JiraActionError = {
   ok: false;
   message: string;
+  code?: number;
+};
+
+type IdentityLike = {
+  tokenIdentifier: string;
+  subject?: string | null;
+  name?: string | null;
+  email?: string | null;
+};
+
+type StoredJiraConnection = {
+  _id: string;
+  ownerUserId: string;
+  ownerName: string;
+  siteUrl: string | null;
+  siteName: string | null;
+  cloudId: string | null;
+  accessToken: string;
+  refreshToken: string;
+  scopes: string[];
+  expiresAt: string;
+  lastError: string | null;
+  updatedAt: string;
+};
+
+type SelectedJiraConnection = StoredJiraConnection & {
+  siteUrl: string;
+  siteName: string;
+  cloudId: string;
+};
+
+const isJiraActionError = (value: StoredJiraConnection | JiraActionError): value is JiraActionError =>
+  "ok" in value && value.ok === false;
+
+const toSelectedConnection = (connection: StoredJiraConnection): SelectedJiraConnection | JiraActionError => {
+  if (!connection.cloudId || !connection.siteUrl) {
+    return { ok: false, message: "Select a Jira site before starting a planning session." };
+  }
+
+  return {
+    ...connection,
+    cloudId: connection.cloudId,
+    siteUrl: connection.siteUrl,
+    siteName: connection.siteName ?? connection.siteUrl,
+  };
 };
 
 const jiraPageSize = 100;
@@ -415,19 +460,144 @@ const jiraErrorMessage = (status: number, payload: unknown): string => {
   return `Jira returned HTTP ${status}.`;
 };
 
-const jiraRequestHeaders = (authorization: string): Record<string, string> => ({
-  Authorization: `Basic ${authorization}`,
+const jiraRequestHeaders = (accessToken: string): Record<string, string> => ({
+  Authorization: `Bearer ${accessToken}`,
   Accept: "application/json",
   "Content-Type": "application/json",
 });
 
-const encodeBase64 = (value: string): string => {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
+const getIdentityUserId = (identity: IdentityLike): string =>
+  typeof identity.subject === "string" && identity.subject.trim()
+    ? identity.subject.trim().slice(0, 200)
+    : identity.tokenIdentifier.trim().slice(0, 200);
+
+const getOAuthConfig = (): { clientId: string; clientSecret: string } | null => {
+  const clientId = process.env.ATLASSIAN_OAUTH_CLIENT_ID?.trim() ?? "";
+  const clientSecret = process.env.ATLASSIAN_OAUTH_CLIENT_SECRET?.trim() ?? "";
+  if (!clientId || !clientSecret) {
+    return null;
   }
-  return btoa(binary);
+  return { clientId, clientSecret };
+};
+
+const jiraApiBaseUrl = (cloudId: string): string => `https://api.atlassian.com/ex/jira/${encodeURIComponent(cloudId)}/rest/api/3`;
+
+const parseExpiresAt = (value: string | null): number => {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const normalizeStoredConnection = (value: unknown): StoredJiraConnection | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = typeof value._id === "string" ? value._id : "";
+  const ownerUserId = typeof value.ownerUserId === "string" ? value.ownerUserId.trim() : "";
+  const accessToken = typeof value.accessToken === "string" ? value.accessToken.trim() : "";
+  const refreshToken = typeof value.refreshToken === "string" ? value.refreshToken.trim() : "";
+  const expiresAt = typeof value.expiresAt === "string" ? value.expiresAt : "";
+  const scopes = Array.isArray(value.scopes) ? value.scopes.filter((scope): scope is string => typeof scope === "string") : [];
+
+  if (!id || !ownerUserId || !accessToken || !refreshToken || !expiresAt) {
+    return null;
+  }
+
+  return {
+    _id: id,
+    ownerUserId,
+    ownerName: typeof value.ownerName === "string" ? value.ownerName : "Facilitator",
+    siteUrl: typeof value.siteUrl === "string" && value.siteUrl.trim() ? value.siteUrl : null,
+    siteName: typeof value.siteName === "string" && value.siteName.trim() ? value.siteName : null,
+    cloudId: typeof value.cloudId === "string" && value.cloudId.trim() ? value.cloudId : null,
+    accessToken,
+    refreshToken,
+    scopes,
+    expiresAt,
+    lastError: typeof value.lastError === "string" ? value.lastError : null,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date().toISOString(),
+  };
+};
+
+const refreshOAuthConnection = async (
+  ctx: any,
+  connection: StoredJiraConnection,
+): Promise<StoredJiraConnection | JiraActionError> => {
+  const config = getOAuthConfig();
+  if (!config) {
+    return { ok: false, message: "Missing Atlassian OAuth environment variables." };
+  }
+
+  let response: Response;
+  let payload: unknown;
+  try {
+    response = await fetch("https://auth.atlassian.com/oauth/token", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        refresh_token: connection.refreshToken,
+      }),
+    });
+    payload = await response.json().catch(() => null);
+  } catch {
+    return { ok: false, message: "Could not refresh the Jira connection right now." };
+  }
+
+  if (!response.ok || !isRecord(payload) || typeof payload.access_token !== "string") {
+    await ctx.runMutation(internal.jiraAuth.updateConnectionTokensInternal, {
+      connectionId: connection._id as any,
+      accessToken: connection.accessToken,
+      refreshToken: connection.refreshToken,
+      expiresAt: connection.expiresAt,
+      scopes: connection.scopes,
+      lastError: "Jira access expired. Reconnect the Atlassian account.",
+    });
+    return { ok: false, message: "Jira access expired. Reconnect the Atlassian account.", code: response.status };
+  }
+
+  const refreshed: StoredJiraConnection = {
+    ...connection,
+    accessToken: payload.access_token,
+    refreshToken: typeof payload.refresh_token === "string" && payload.refresh_token.trim() ? payload.refresh_token : connection.refreshToken,
+    scopes:
+      typeof payload.scope === "string"
+        ? payload.scope.split(/\s+/).map((scope) => scope.trim()).filter(Boolean)
+        : connection.scopes,
+    expiresAt: new Date(Date.now() + (typeof payload.expires_in === "number" ? payload.expires_in : 3600) * 1000).toISOString(),
+    lastError: null,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await ctx.runMutation(internal.jiraAuth.updateConnectionTokensInternal, {
+    connectionId: connection._id as any,
+    accessToken: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken,
+    expiresAt: refreshed.expiresAt,
+    scopes: refreshed.scopes,
+    lastError: null,
+  });
+
+  return refreshed;
+};
+
+const ensureFreshConnection = async (
+  ctx: any,
+  connection: StoredJiraConnection,
+): Promise<StoredJiraConnection | JiraActionError> => {
+  if (parseExpiresAt(connection.expiresAt) > Date.now() + 60_000) {
+    return connection;
+  }
+
+  return refreshOAuthConnection(ctx, connection);
 };
 
 const toDateMs = (value: string | null): number => {
@@ -488,7 +658,8 @@ const groupIssuesBySprint = (issues: JiraIssueWithSprint[], category: "current" 
 
 const fetchAllSearchIssues = async (
   jiraOrigin: string,
-  authorization: string,
+  apiBaseUrl: string,
+  accessToken: string,
   jql: string,
   quickFilterFieldIds: string[],
 ): Promise<{ ok: true; issues: JiraIssueWithSprint[] } | JiraActionError> => {
@@ -500,9 +671,9 @@ const fetchAllSearchIssues = async (
     let response: Response;
     let payload: unknown;
     try {
-      response = await fetch(`${jiraOrigin}/rest/api/3/search/jql`, {
+      response = await fetch(`${apiBaseUrl}/search/jql`, {
         method: "POST",
-        headers: jiraRequestHeaders(authorization),
+        headers: jiraRequestHeaders(accessToken),
         body: JSON.stringify({
           jql,
           maxResults: jiraPageSize,
@@ -521,7 +692,7 @@ const fetchAllSearchIssues = async (
     }
 
     if (!response.ok) {
-      return { ok: false, message: jiraErrorMessage(response.status, payload) };
+      return { ok: false, message: jiraErrorMessage(response.status, payload), code: response.status };
     }
 
     const pageIssues = mapJiraIssues(jiraOrigin, payload, quickFilterFieldIds);
@@ -649,9 +820,6 @@ const buildQuickFilterData = (
 
 export const loadIssues = action({
   args: {
-    baseUrl: v.string(),
-    email: v.string(),
-    apiToken: v.string(),
     ticketPrefix: v.string(),
     participantId: v.optional(v.string()),
     quickFilterFieldIds: v.optional(v.array(v.string())),
@@ -666,27 +834,63 @@ export const loadIssues = action({
       };
     }
 
-    const jiraOrigin = normalizeJiraOrigin(args.baseUrl);
-    const email = args.email.trim();
-    const apiToken = args.apiToken.trim();
     const ticketPrefix = normalizeTicketPrefix(args.ticketPrefix);
     const quickFilterFieldIds = parseQuickFilterFieldIds(args.quickFilterFieldIds);
 
-    if (!jiraOrigin || !email || !apiToken || !ticketPrefix) {
-      return { ok: false, message: "Jira URL, email, API token, and ticket prefix are required." };
+    if (!ticketPrefix) {
+      return { ok: false, message: "Ticket prefix is required." };
     }
 
-    const authorization = encodeBase64(`${email}:${apiToken}`);
+    const ownerUserId = getIdentityUserId(identity);
+    const storedConnection = normalizeStoredConnection(
+      await ctx.runQuery(internal.jiraAuth.getConnectionForCurrentUserInternal, { ownerUserId }),
+    );
+    if (!storedConnection) {
+      return { ok: false, message: "Connect Jira before starting a planning session." };
+    }
+
+    const connection = await ensureFreshConnection(ctx, storedConnection);
+    if (isJiraActionError(connection)) {
+      return connection;
+    }
+
+    const selectedConnection = toSelectedConnection(connection);
+    if (isJiraActionError(selectedConnection)) {
+      return selectedConnection;
+    }
+
+    const jiraOrigin = selectedConnection.siteUrl;
+    const apiBaseUrl = jiraApiBaseUrl(selectedConnection.cloudId);
     const projectClause = `project = "${ticketPrefix}"`;
     const currentSprintJql = `${projectClause} AND sprint in openSprints() ORDER BY Rank ASC, created ASC`;
     const nextSprintJql = `${projectClause} AND sprint in futureSprints() ORDER BY Rank ASC, created ASC`;
     const backlogJql = `${projectClause} AND sprint is EMPTY ORDER BY Rank ASC, created ASC`;
 
-    const [currentIssuesResult, nextIssuesResult, backlogIssuesResult] = await Promise.all([
-      fetchAllSearchIssues(jiraOrigin, authorization, currentSprintJql, quickFilterFieldIds),
-      fetchAllSearchIssues(jiraOrigin, authorization, nextSprintJql, quickFilterFieldIds),
-      fetchAllSearchIssues(jiraOrigin, authorization, backlogJql, quickFilterFieldIds),
-    ]);
+    const loadIssueBuckets = async (accessToken: string) =>
+      Promise.all([
+        fetchAllSearchIssues(jiraOrigin, apiBaseUrl, accessToken, currentSprintJql, quickFilterFieldIds),
+        fetchAllSearchIssues(jiraOrigin, apiBaseUrl, accessToken, nextSprintJql, quickFilterFieldIds),
+        fetchAllSearchIssues(jiraOrigin, apiBaseUrl, accessToken, backlogJql, quickFilterFieldIds),
+      ]);
+
+    let [currentIssuesResult, nextIssuesResult, backlogIssuesResult] = await loadIssueBuckets(selectedConnection.accessToken);
+    const shouldRetryAfterRefresh = [currentIssuesResult, nextIssuesResult, backlogIssuesResult].some(
+      (result) => !result.ok && result.code === 401,
+    );
+    let activeConnection = selectedConnection;
+
+    if (shouldRetryAfterRefresh) {
+      const refreshed = await refreshOAuthConnection(ctx, selectedConnection);
+      if (isJiraActionError(refreshed)) {
+        return refreshed;
+      }
+      const nextConnection = toSelectedConnection(refreshed);
+      if (isJiraActionError(nextConnection)) {
+        return nextConnection;
+      }
+      activeConnection = nextConnection;
+      [currentIssuesResult, nextIssuesResult, backlogIssuesResult] = await loadIssueBuckets(activeConnection.accessToken);
+    }
 
     if (!currentIssuesResult.ok) {
       return currentIssuesResult;
@@ -751,12 +955,12 @@ export const loadIssues = action({
       jiraIssues,
       jiraSubtasksByIssueId,
       jiraConnection: {
+        connectionId: activeConnection._id,
         baseUrl: jiraOrigin,
-        email,
-        apiToken,
+        siteName: activeConnection.siteName ?? jiraOrigin,
         ticketPrefix,
         quickFilterFieldIds,
-        ownerTokenIdentifier: identity.tokenIdentifier,
+        ownerUserId,
         ownerName: identity.name ?? identity.email ?? "Facilitator",
         updatedAt: new Date().toISOString(),
       },
@@ -824,20 +1028,35 @@ export const syncIssueField = action({
       return { ok: false, message: "Only the signed-in orchestrator can sync Jira changes." };
     }
 
-    const jiraOrigin = normalizeJiraOrigin(syncContext.baseUrl);
-    const email = syncContext.email.trim();
-    const apiToken = syncContext.apiToken.trim();
     const issueId = normalizeIssueId(args.issueId);
     const issueKey = normalizeIssueKey(args.issueKey);
     const fieldId = normalizeJiraFieldId(args.fieldId);
     const value = normalizeFieldValue(args.value);
+    const storedConnection = normalizeStoredConnection(
+      await ctx.runQuery(internal.jiraAuth.getConnectionForCurrentUserInternal, {
+        ownerUserId: syncContext.ownerUserId,
+      }),
+    );
 
-    if (!jiraOrigin || !email || !apiToken || !issueId || !issueKey || !fieldId) {
+    if (!storedConnection || storedConnection.siteUrl !== syncContext.baseUrl || !issueId || !issueKey || !fieldId) {
       return {
         ok: false,
-        message: "Stored Jira connection, issue, and field details are required.",
+        message: "Reconnect Jira to the room's site or reload the planning session before syncing changes.",
       };
     }
+
+    const freshConnection = await ensureFreshConnection(ctx, storedConnection);
+    if (isJiraActionError(freshConnection)) {
+      return freshConnection;
+    }
+
+    const selectedConnection = toSelectedConnection(freshConnection);
+    if (isJiraActionError(selectedConnection)) {
+      return selectedConnection;
+    }
+
+    const jiraOrigin = selectedConnection.siteUrl;
+    const apiBaseUrl = jiraApiBaseUrl(selectedConnection.cloudId);
 
     await ctx.runMutation(api.room.markIssueFieldSyncing, {
       issueId,
@@ -848,18 +1067,10 @@ export const syncIssueField = action({
       value,
     });
 
-    const authorization = encodeBase64(`${email}:${apiToken}`);
-    let response: Response;
-    let payload: unknown;
-
-    try {
-      response = await fetch(`${jiraOrigin}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+    const syncFieldUpdate = async (accessToken: string) => {
+      const response = await fetch(`${apiBaseUrl}/issue/${encodeURIComponent(issueKey)}`, {
         method: "PUT",
-        headers: {
-          Authorization: `Basic ${authorization}`,
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
+        headers: jiraRequestHeaders(accessToken),
         body: JSON.stringify({
           fields: {
             [fieldId]: toJiraFieldValue(fieldId, value),
@@ -867,10 +1078,48 @@ export const syncIssueField = action({
         }),
       });
 
-      try {
-        payload = await response.json();
-      } catch {
-        payload = null;
+      const payload = await response.json().catch(() => null);
+      return { response, payload };
+    };
+
+    let response: Response;
+    let payload: unknown;
+
+    try {
+      ({ response, payload } = await syncFieldUpdate(selectedConnection.accessToken));
+
+      if (response.status === 401) {
+        const refreshed = await refreshOAuthConnection(ctx, selectedConnection);
+        if (isJiraActionError(refreshed)) {
+          await ctx.runMutation(api.room.markIssueFieldSyncResult, {
+            issueId,
+            issueKey,
+            issueUrl: `${jiraOrigin}/browse/${encodeURIComponent(issueKey)}`,
+            fieldId,
+            label: fieldId,
+            value,
+            ok: false,
+            failureMessage: refreshed.message,
+          });
+          return refreshed;
+        }
+
+        const nextConnection = toSelectedConnection(refreshed);
+        if (isJiraActionError(nextConnection)) {
+          await ctx.runMutation(api.room.markIssueFieldSyncResult, {
+            issueId,
+            issueKey,
+            issueUrl: `${jiraOrigin}/browse/${encodeURIComponent(issueKey)}`,
+            fieldId,
+            label: fieldId,
+            value,
+            ok: false,
+            failureMessage: nextConnection.message,
+          });
+          return nextConnection;
+        }
+
+        ({ response, payload } = await syncFieldUpdate(nextConnection.accessToken));
       }
     } catch {
       await ctx.runMutation(api.room.markIssueFieldSyncResult, {

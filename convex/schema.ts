@@ -68,14 +68,20 @@ const issuePresenceSnapshot = v.object({
 });
 
 const jiraConnectionSnapshot = v.object({
+  connectionId: v.string(),
   baseUrl: v.string(),
-  email: v.string(),
-  apiToken: v.string(),
+  siteName: v.string(),
   ticketPrefix: v.string(),
   quickFilterFieldIds: v.array(v.string()),
-  ownerTokenIdentifier: v.string(),
+  ownerUserId: v.string(),
   ownerName: v.string(),
   updatedAt: v.string(),
+});
+
+const jiraAccessibleSite = v.object({
+  id: v.string(),
+  name: v.string(),
+  url: v.string(),
 });
 
 export default defineSchema({
@@ -110,4 +116,31 @@ export default defineSchema({
     jiraConnection: v.optional(v.union(jiraConnectionSnapshot, v.null())),
     estimatedIssueIds: v.optional(v.array(v.string())),
   }),
+
+  jiraConnections: defineTable({
+    ownerUserId: v.string(),
+    ownerName: v.string(),
+    siteUrl: v.union(v.string(), v.null()),
+    siteName: v.union(v.string(), v.null()),
+    cloudId: v.union(v.string(), v.null()),
+    availableSites: v.array(jiraAccessibleSite),
+    accessToken: v.string(),
+    refreshToken: v.string(),
+    scopes: v.array(v.string()),
+    expiresAt: v.string(),
+    lastError: v.union(v.string(), v.null()),
+    updatedAt: v.string(),
+  })
+    .index("by_owner_user_id", ["ownerUserId"]),
+
+  jiraOAuthStates: defineTable({
+    state: v.string(),
+    ownerUserId: v.string(),
+    ownerName: v.string(),
+    returnTo: v.string(),
+    codeVerifier: v.string(),
+    createdAt: v.string(),
+    expiresAt: v.string(),
+  })
+    .index("by_state", ["state"]),
 });
