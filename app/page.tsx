@@ -543,6 +543,9 @@ export default function HomePage() {
   const isCurrentUserOrchestrator = (): boolean =>
     roomStateRef.current.orchestratorId !== null && roomStateRef.current.orchestratorId === roomStateRef.current.myId
 
+  const shouldApplyParticipantInactivityBehavior = (): boolean =>
+    isConnectedRef.current && !isCurrentUserOrchestrator()
+
   const getIssueFieldDoc = (issueId: string, fieldId: string): IssueFieldDoc | null => {
     const normalizedIssueId = normalizeIssueId(issueId)
     const normalizedFieldId = normalizeEditorFieldId(fieldId)
@@ -943,6 +946,11 @@ export default function HomePage() {
 
   const handleParticipantInactivity = (): void => {
     inactivityTimerRef.current = undefined
+
+    if (!shouldApplyParticipantInactivityBehavior()) {
+      return
+    }
+
     blurActiveTicketField()
 
     if (!canFollowCurrentOrchestrator()) {
@@ -960,6 +968,11 @@ export default function HomePage() {
   }
 
   const registerParticipantActivity = (options?: { manualScroll?: boolean }): void => {
+    if (!shouldApplyParticipantInactivityBehavior()) {
+      clearInactivityTimer()
+      return
+    }
+
     lastActivityAtRef.current = Date.now()
     if (options?.manualScroll) {
       lastManualScrollAtRef.current = lastActivityAtRef.current
@@ -1291,8 +1304,10 @@ export default function HomePage() {
         }
 
         if (!canFollowCurrentOrchestrator()) {
-          blurActiveTicketField()
-          releaseAllIssuePresence()
+          if (!isCurrentUserOrchestrator()) {
+            blurActiveTicketField()
+            releaseAllIssuePresence()
+          }
           isFollowingOrchestratorRef.current = true
           setIsFollowingOrchestrator(true)
           localSelectedIssueIdOverrideRef.current = null
