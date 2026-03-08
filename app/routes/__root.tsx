@@ -64,7 +64,7 @@ function AppChrome({ children }: { children: ReactNode }) {
   const { isSignedIn } = useUser();
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden" style={{ background: 'var(--color-bg)' }}>
+    <div className="flex min-h-screen flex-col" style={{ background: 'var(--color-bg)' }}>
       <header
         className="flex h-14 shrink-0 items-center justify-between border-b px-4"
         style={{
@@ -122,6 +122,37 @@ function AppChrome({ children }: { children: ReactNode }) {
         </div>
       </header>
       <main className="flex-1 overflow-hidden">{children}</main>
+      <footer
+        className="shrink-0 border-t px-4 py-3"
+        style={{
+          borderColor: 'var(--color-border)',
+          background: 'var(--color-surface)',
+        }}
+      >
+        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs">
+          <Link
+            to="/privacy"
+            className="transition-colors hover:underline"
+            style={{ color: 'var(--color-text-tertiary)' }}
+          >
+            Privacy
+          </Link>
+          <Link
+            to="/terms"
+            className="transition-colors hover:underline"
+            style={{ color: 'var(--color-text-tertiary)' }}
+          >
+            Terms
+          </Link>
+          <Link
+            to="/support"
+            className="transition-colors hover:underline"
+            style={{ color: 'var(--color-text-tertiary)' }}
+          >
+            Support
+          </Link>
+        </div>
+      </footer>
     </div>
   );
 }
