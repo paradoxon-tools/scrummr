@@ -25,6 +25,7 @@ type StoredJiraConnection = {
   _id: string;
   ownerUserId: string;
   ownerName: string;
+  selectedResourceKey: string | null;
   siteUrl: string | null;
   siteName: string | null;
   cloudId: string | null;
@@ -40,6 +41,14 @@ type SelectedJiraConnection = StoredJiraConnection & {
   siteUrl: string;
   siteName: string;
   cloudId: string;
+};
+
+type JiraAccessibleSite = {
+  resourceKey: string;
+  id: string;
+  name: string;
+  url: string;
+  scopes: string[];
 };
 
 const isJiraActionError = (value: StoredJiraConnection | JiraActionError): value is JiraActionError =>
@@ -466,6 +475,8 @@ const jiraRequestHeaders = (accessToken: string): Record<string, string> => ({
   "Content-Type": "application/json",
 });
 
+const buildAccessibleSiteKey = (id: string, url: string): string => `${id}::${url}`;
+
 const getIdentityUserId = (identity: IdentityLike): string =>
   typeof identity.subject === "string" && identity.subject.trim()
     ? identity.subject.trim().slice(0, 200)
@@ -510,6 +521,8 @@ const normalizeStoredConnection = (value: unknown): StoredJiraConnection | null 
     _id: id,
     ownerUserId,
     ownerName: typeof value.ownerName === "string" ? value.ownerName : "Facilitator",
+    selectedResourceKey:
+      typeof value.selectedResourceKey === "string" && value.selectedResourceKey.trim() ? value.selectedResourceKey : null,
     siteUrl: typeof value.siteUrl === "string" && value.siteUrl.trim() ? value.siteUrl : null,
     siteName: typeof value.siteName === "string" && value.siteName.trim() ? value.siteName : null,
     cloudId: typeof value.cloudId === "string" && value.cloudId.trim() ? value.cloudId : null,
@@ -520,6 +533,28 @@ const normalizeStoredConnection = (value: unknown): StoredJiraConnection | null 
     lastError: typeof value.lastError === "string" ? value.lastError : null,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date().toISOString(),
   };
+};
+
+const findSelectedAccessibleSite = (
+  connection: StoredJiraConnection,
+  availableSites: JiraAccessibleSite[],
+): JiraAccessibleSite | null => {
+  const selectedResourceKey =
+    connection.selectedResourceKey ??
+    (connection.cloudId && connection.siteUrl ? buildAccessibleSiteKey(connection.cloudId, connection.siteUrl) : null);
+
+  if (selectedResourceKey) {
+    const exactMatch = availableSites.find((site) => site.resourceKey === selectedResourceKey);
+    if (exactMatch) {
+      return exactMatch;
+    }
+  }
+
+  if (connection.cloudId && connection.siteUrl) {
+    return availableSites.find((site) => site.id === connection.cloudId && site.url === connection.siteUrl) ?? null;
+  }
+
+  return null;
 };
 
 const refreshOAuthConnection = async (
@@ -598,6 +633,88 @@ const ensureFreshConnection = async (
   }
 
   return refreshOAuthConnection(ctx, connection);
+};
+
+const verifySelectedSiteAccess = async (
+  ctx: any,
+  connection: StoredJiraConnection,
+): Promise<StoredJiraConnection | JiraActionError> => {
+  let response: Response;
+  let payload: unknown;
+  try {
+    response = await fetch("https://api.atlassian.com/oauth/token/accessible-resources", {
+      headers: {
+        Authorization: `Bearer ${connection.accessToken}`,
+        Accept: "application/json",
+      },
+    });
+    payload = await response.json().catch(() => null);
+  } catch {
+    return { ok: false, message: "Could not verify Jira site access right now." };
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: response.status === 401 ? "Jira access expired. Reconnect the Atlassian account." : "Could not verify Jira site access right now.",
+      code: response.status,
+    };
+  }
+
+  const availableSites = (await ctx.runQuery(internal.jiraAuth.normalizeAccessibleSitesInternal, {
+    resources: payload,
+  })) as JiraAccessibleSite[];
+  const selectedSite = findSelectedAccessibleSite(connection, availableSites);
+  const nextConnection: StoredJiraConnection = {
+    ...connection,
+    selectedResourceKey: selectedSite?.resourceKey ?? null,
+    cloudId: selectedSite?.id ?? null,
+    siteUrl: selectedSite?.url ?? null,
+    siteName: selectedSite?.name ?? null,
+    lastError: selectedSite
+      ? null
+      : availableSites.length === 0
+        ? "No Jira Cloud sites are available for this Atlassian account."
+        : "Selected Jira site access changed. Choose a Jira site again.",
+  };
+
+  await ctx.runMutation(internal.jiraAuth.syncConnectionSiteAccessInternal, {
+    connectionId: connection._id as any,
+    availableSites,
+    selectedResourceKey: nextConnection.selectedResourceKey,
+    cloudId: nextConnection.cloudId,
+    siteUrl: nextConnection.siteUrl,
+    siteName: nextConnection.siteName,
+    lastError: nextConnection.lastError,
+  });
+
+  if (!selectedSite) {
+    return { ok: false, message: nextConnection.lastError ?? "Selected Jira site access changed. Choose a Jira site again." };
+  }
+
+  return nextConnection;
+};
+
+const ensureUsableConnection = async (
+  ctx: any,
+  connection: StoredJiraConnection,
+): Promise<StoredJiraConnection | JiraActionError> => {
+  const freshConnection = await ensureFreshConnection(ctx, connection);
+  if (isJiraActionError(freshConnection)) {
+    return freshConnection;
+  }
+
+  const verifiedConnection = await verifySelectedSiteAccess(ctx, freshConnection);
+  if (!isJiraActionError(verifiedConnection) || verifiedConnection.code !== 401) {
+    return verifiedConnection;
+  }
+
+  const refreshedConnection = await refreshOAuthConnection(ctx, freshConnection);
+  if (isJiraActionError(refreshedConnection)) {
+    return refreshedConnection;
+  }
+
+  return verifySelectedSiteAccess(ctx, refreshedConnection);
 };
 
 const toDateMs = (value: string | null): number => {
@@ -849,7 +966,7 @@ export const loadIssues = action({
       return { ok: false, message: "Connect Jira before starting a planning session." };
     }
 
-    const connection = await ensureFreshConnection(ctx, storedConnection);
+    const connection = await ensureUsableConnection(ctx, storedConnection);
     if (isJiraActionError(connection)) {
       return connection;
     }
@@ -1045,7 +1162,7 @@ export const syncIssueField = action({
       };
     }
 
-    const freshConnection = await ensureFreshConnection(ctx, storedConnection);
+    const freshConnection = await ensureUsableConnection(ctx, storedConnection);
     if (isJiraActionError(freshConnection)) {
       return freshConnection;
     }

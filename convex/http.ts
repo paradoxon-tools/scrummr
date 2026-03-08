@@ -54,6 +54,9 @@ http.route({
       if (!config) {
         return redirect("error", "Missing Atlassian OAuth environment variables.");
       }
+      if (!config.scopes.some((scope) => scope.trim().toLowerCase() === "offline_access")) {
+        return redirect("error", "Atlassian OAuth scopes must include offline_access.");
+      }
 
       const tokenResponse = await fetch("https://auth.atlassian.com/oauth/token", {
         method: "POST",
@@ -71,8 +74,11 @@ http.route({
         }),
       });
       const tokenPayload = await tokenResponse.json().catch(() => null);
-      if (!tokenResponse.ok || !tokenPayload || typeof tokenPayload.access_token !== "string" || typeof tokenPayload.refresh_token !== "string") {
+      if (!tokenResponse.ok || !tokenPayload || typeof tokenPayload.access_token !== "string") {
         return redirect("error", "Could not exchange Jira authorization for tokens.");
+      }
+      if (typeof tokenPayload.refresh_token !== "string" || !tokenPayload.refresh_token.trim()) {
+        return redirect("error", "Jira OAuth did not return a refresh token. Ensure offline_access is configured.");
       }
 
       const resourcesResponse = await fetch("https://api.atlassian.com/oauth/token/accessible-resources", {
@@ -109,6 +115,7 @@ http.route({
         scopes,
         expiresAt: new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
         availableSites,
+        selectedResourceKey: selectedSite?.resourceKey ?? null,
         cloudId: selectedSite?.id ?? null,
         siteUrl: selectedSite?.url ?? null,
         siteName: selectedSite?.name ?? null,

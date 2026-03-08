@@ -10,12 +10,15 @@ type IdentityLike = {
 };
 
 type JiraAccessibleSite = {
+  resourceKey: string;
   id: string;
   name: string;
   url: string;
+  scopes: string[];
 };
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
@@ -35,18 +38,53 @@ export const getIdentityUserId = (identity: IdentityLike): string => {
   return identity.tokenIdentifier.trim().slice(0, 200);
 };
 
+const encodeBase64 = (value: Uint8Array): string => {
+  let encoded = "";
+  for (let index = 0; index < value.length; index += 3) {
+    const first = value[index]!;
+    const hasSecond = index + 1 < value.length;
+    const hasThird = index + 2 < value.length;
+    const second = hasSecond ? value[index + 1]! : 0;
+    const third = hasThird ? value[index + 2]! : 0;
+    const chunk = (first << 16) | (second << 8) | third;
+
+    encoded += BASE64_ALPHABET[(chunk >> 18) & 63];
+    encoded += BASE64_ALPHABET[(chunk >> 12) & 63];
+    encoded += hasSecond ? BASE64_ALPHABET[(chunk >> 6) & 63] : "=";
+    encoded += hasThird ? BASE64_ALPHABET[chunk & 63] : "=";
+  }
+  return encoded;
+};
+
 const toBase64Url = (value: Uint8Array): string =>
-  Buffer.from(value)
-    .toString("base64")
+  encodeBase64(value)
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
 
-const createRandomToken = (size: number): string => toBase64Url(crypto.getRandomValues(new Uint8Array(size)));
+const encodeUtf8Base64 = (value: string): string => encodeBase64(new TextEncoder().encode(value));
+
+const getRuntimeCrypto = (): Crypto => {
+  if (typeof crypto !== "undefined") {
+    return crypto;
+  }
+  throw new Error("Web Crypto API is unavailable in the Convex runtime.");
+};
+
+const createRandomToken = (size: number): string => toBase64Url(getRuntimeCrypto().getRandomValues(new Uint8Array(size)));
+const normalizeScope = (value: string): string => value.trim();
+const isJiraScope = (value: string): boolean => normalizeScope(value).toLowerCase().includes("jira");
+const hasOfflineAccessScope = (scopes: string[]): boolean =>
+  scopes.some((scope) => normalizeScope(scope).toLowerCase() === "offline_access");
+const buildAccessibleSiteKey = (id: string, url: string): string => `${id}::${url}`;
 
 const createCodeChallenge = async (verifier: string): Promise<string> => {
+  const runtimeCrypto = getRuntimeCrypto();
+  if (!runtimeCrypto.subtle) {
+    throw new Error("Web Crypto SubtleCrypto API is unavailable in the Convex runtime.");
+  }
   const bytes = new TextEncoder().encode(verifier);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const digest = await runtimeCrypto.subtle.digest("SHA-256", bytes);
   return toBase64Url(new Uint8Array(digest));
 };
 
@@ -102,17 +140,29 @@ const normalizeAccessibleSites = (value: unknown): JiraAccessibleSite[] => {
     const id = typeof entry.id === "string" ? entry.id.trim().slice(0, 120) : "";
     const url = normalizeSiteUrl(entry.url);
     const name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim().slice(0, 120) : url;
-    if (!id || !url || sites.has(id)) {
+    if (!id || !url) {
       continue;
     }
 
-    const scopes = Array.isArray(entry.scopes) ? entry.scopes.filter((scope): scope is string => typeof scope === "string") : [];
-    const looksLikeJira = scopes.some((scope) => scope.toLowerCase().includes("jira")) || /atlassian\.net$/i.test(new URL(url).hostname);
-    if (!looksLikeJira && scopes.length > 0) {
+    const scopes = Array.isArray(entry.scopes)
+      ? [...new Set(entry.scopes.filter((scope): scope is string => typeof scope === "string").map(normalizeScope).filter(Boolean))]
+      : [];
+    if (!scopes.some(isJiraScope)) {
       continue;
     }
 
-    sites.set(id, { id, name, url });
+    const resourceKey = buildAccessibleSiteKey(id, url);
+    const existing = sites.get(resourceKey);
+    if (existing) {
+      sites.set(resourceKey, {
+        ...existing,
+        name: existing.name || name,
+        scopes: [...new Set([...existing.scopes, ...scopes])],
+      });
+      continue;
+    }
+
+    sites.set(resourceKey, { resourceKey, id, name, url, scopes });
   }
 
   return [...sites.values()];
@@ -142,6 +192,7 @@ export const getConnectionStatus = query({
     return {
       status: hasSelectedSite ? ("connected" as const) : ("needs_site_selection" as const),
       connectionId: String(connection._id),
+      selectedResourceKey: typeof connection.selectedResourceKey === "string" ? connection.selectedResourceKey : null,
       siteName: typeof connection.siteName === "string" ? connection.siteName : null,
       siteUrl: typeof connection.siteUrl === "string" ? connection.siteUrl : null,
       updatedAt: typeof connection.updatedAt === "string" ? connection.updatedAt : null,
@@ -156,53 +207,61 @@ export const beginOAuth = action({
     returnTo: v.string(),
   },
   handler: async (ctx, args): Promise<{ ok: true; authorizeUrl: string } | { ok: false; message: string }> => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      return { ok: false, message: "Sign in before connecting Jira." };
-    }
-
-    const config = getOAuthConfig();
-    if (!config) {
-      return { ok: false, message: "Missing Atlassian OAuth environment variables." };
-    }
-
-    let returnTo = args.returnTo.trim();
     try {
-      returnTo = new URL(returnTo).toString();
-    } catch {
-      return { ok: false, message: "Dashboard return URL is invalid." };
+      const identity = await ctx.auth.getUserIdentity();
+      if (!identity) {
+        return { ok: false, message: "Sign in before connecting Jira." };
+      }
+
+      const config = getOAuthConfig();
+      if (!config) {
+        return { ok: false, message: "Missing Atlassian OAuth environment variables." };
+      }
+      if (!hasOfflineAccessScope(config.scopes)) {
+        return { ok: false, message: "ATLASSIAN_OAUTH_SCOPES must include offline_access." };
+      }
+
+      let returnTo = args.returnTo.trim();
+      try {
+        returnTo = new URL(returnTo).toString();
+      } catch {
+        return { ok: false, message: "Dashboard return URL is invalid." };
+      }
+
+      const state = createRandomToken(24);
+      const codeVerifier = createRandomToken(48);
+      const codeChallenge = await createCodeChallenge(codeVerifier);
+      const ownerUserId = getIdentityUserId(identity);
+      const ownerName = normalizeOwnerName(identity);
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + OAUTH_STATE_TTL_MS).toISOString();
+
+      await ctx.runMutation(internal.jiraAuth.storeOAuthStateInternal, {
+        state,
+        ownerUserId,
+        ownerName,
+        returnTo,
+        codeVerifier,
+        createdAt: now.toISOString(),
+        expiresAt,
+      });
+
+      const authorizeUrl = new URL("https://auth.atlassian.com/authorize");
+      authorizeUrl.searchParams.set("audience", "api.atlassian.com");
+      authorizeUrl.searchParams.set("client_id", config.clientId);
+      authorizeUrl.searchParams.set("scope", config.scopes.join(" "));
+      authorizeUrl.searchParams.set("redirect_uri", config.callbackUrl);
+      authorizeUrl.searchParams.set("state", state);
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("prompt", "consent");
+      authorizeUrl.searchParams.set("code_challenge", codeChallenge);
+      authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+      return { ok: true, authorizeUrl: authorizeUrl.toString() };
+    } catch (error) {
+      console.error("jiraAuth.beginOAuth failed", error);
+      return { ok: false, message: "Could not start Jira authorization. Check Convex logs and OAuth env vars." };
     }
-
-    const state = createRandomToken(24);
-    const codeVerifier = createRandomToken(48);
-    const codeChallenge = await createCodeChallenge(codeVerifier);
-    const ownerUserId = getIdentityUserId(identity);
-    const ownerName = normalizeOwnerName(identity);
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + OAUTH_STATE_TTL_MS).toISOString();
-
-    await ctx.runMutation(api.jiraAuth.storeOAuthState, {
-      state,
-      ownerUserId,
-      ownerName,
-      returnTo,
-      codeVerifier,
-      createdAt: now.toISOString(),
-      expiresAt,
-    });
-
-    const authorizeUrl = new URL("https://auth.atlassian.com/authorize");
-    authorizeUrl.searchParams.set("audience", "api.atlassian.com");
-    authorizeUrl.searchParams.set("client_id", config.clientId);
-    authorizeUrl.searchParams.set("scope", config.scopes.join(" "));
-    authorizeUrl.searchParams.set("redirect_uri", config.callbackUrl);
-    authorizeUrl.searchParams.set("state", state);
-    authorizeUrl.searchParams.set("response_type", "code");
-    authorizeUrl.searchParams.set("prompt", "consent");
-    authorizeUrl.searchParams.set("code_challenge", codeChallenge);
-    authorizeUrl.searchParams.set("code_challenge_method", "S256");
-
-    return { ok: true, authorizeUrl: authorizeUrl.toString() };
   },
 });
 
@@ -226,7 +285,7 @@ export const disconnect = action({
         await fetch("https://auth.atlassian.com/oauth/revoke", {
           method: "POST",
           headers: {
-            Authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`,
+            Authorization: `Basic ${encodeUtf8Base64(`${config.clientId}:${config.clientSecret}`)}`,
             Accept: "application/json",
             "Content-Type": "application/json",
           },
@@ -244,7 +303,7 @@ export const disconnect = action({
 
 export const selectSite = mutation({
   args: {
-    siteId: v.string(),
+    resourceKey: v.string(),
   },
   handler: async (ctx, args): Promise<{ ok: true } | { ok: false; message: string }> => {
     const identity = await ctx.auth.getUserIdentity();
@@ -262,12 +321,13 @@ export const selectSite = mutation({
     }
 
     const availableSites = normalizeAccessibleSites(connection.availableSites);
-    const nextSite = availableSites.find((site) => site.id === args.siteId.trim());
+    const nextSite = availableSites.find((site) => site.resourceKey === args.resourceKey.trim());
     if (!nextSite) {
       return { ok: false, message: "Selected Jira site is no longer available." };
     }
 
     await ctx.db.patch(connection._id, {
+      selectedResourceKey: nextSite.resourceKey,
       cloudId: nextSite.id,
       siteUrl: nextSite.url,
       siteName: nextSite.name,
@@ -279,7 +339,7 @@ export const selectSite = mutation({
   },
 });
 
-export const storeOAuthState = mutation({
+export const storeOAuthStateInternal = internalMutation({
   args: {
     state: v.string(),
     ownerUserId: v.string(),
@@ -340,7 +400,14 @@ export const upsertConnectionInternal = internalMutation({
     refreshToken: v.string(),
     scopes: v.array(v.string()),
     expiresAt: v.string(),
-    availableSites: v.array(v.object({ id: v.string(), name: v.string(), url: v.string() })),
+    availableSites: v.array(v.object({
+      resourceKey: v.string(),
+      id: v.string(),
+      name: v.string(),
+      url: v.string(),
+      scopes: v.array(v.string()),
+    })),
+    selectedResourceKey: v.union(v.string(), v.null()),
     cloudId: v.union(v.string(), v.null()),
     siteUrl: v.union(v.string(), v.null()),
     siteName: v.union(v.string(), v.null()),
@@ -355,6 +422,7 @@ export const upsertConnectionInternal = internalMutation({
     const payload = {
       ownerUserId: args.ownerUserId,
       ownerName: args.ownerName,
+      selectedResourceKey: args.selectedResourceKey,
       siteUrl: args.siteUrl,
       siteName: args.siteName,
       cloudId: args.cloudId,
@@ -393,6 +461,57 @@ export const updateConnectionTokensInternal = internalMutation({
       expiresAt: args.expiresAt,
       scopes: args.scopes,
       lastError: args.lastError,
+      updatedAt: new Date().toISOString(),
+    });
+    return { ok: true };
+  },
+});
+
+export const syncConnectionSiteAccessInternal = internalMutation({
+  args: {
+    connectionId: v.id("jiraConnections"),
+    availableSites: v.array(v.object({
+      resourceKey: v.string(),
+      id: v.string(),
+      name: v.string(),
+      url: v.string(),
+      scopes: v.array(v.string()),
+    })),
+    selectedResourceKey: v.union(v.string(), v.null()),
+    cloudId: v.union(v.string(), v.null()),
+    siteUrl: v.union(v.string(), v.null()),
+    siteName: v.union(v.string(), v.null()),
+    lastError: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.connectionId);
+    if (!existing) {
+      return { ok: false };
+    }
+
+    const nextPayload = {
+      availableSites: args.availableSites,
+      selectedResourceKey: args.selectedResourceKey,
+      cloudId: args.cloudId,
+      siteUrl: args.siteUrl,
+      siteName: args.siteName,
+      lastError: args.lastError,
+    };
+    const currentPayload = {
+      availableSites: existing.availableSites,
+      selectedResourceKey: existing.selectedResourceKey ?? null,
+      cloudId: existing.cloudId,
+      siteUrl: existing.siteUrl,
+      siteName: existing.siteName,
+      lastError: existing.lastError,
+    };
+
+    if (JSON.stringify(currentPayload) === JSON.stringify(nextPayload)) {
+      return { ok: true };
+    }
+
+    await ctx.db.patch(args.connectionId, {
+      ...nextPayload,
       updatedAt: new Date().toISOString(),
     });
     return { ok: true };

@@ -283,13 +283,13 @@ export default function DashboardPage() {
     }
   }
 
-  const selectSite = async (siteId: string): Promise<void> => {
+  const selectSite = async (resourceKey: string): Promise<void> => {
     setIsSelectingSite(true)
     setErrorMessage('')
     setSuccessMessage('')
 
     try {
-      const result = await selectSiteMutation({ siteId })
+      const result = await selectSiteMutation({ resourceKey })
       if (!result.ok) {
         setErrorMessage(result.message)
         return
@@ -392,11 +392,11 @@ export default function DashboardPage() {
                 <div className="mt-4 space-y-2">
                   {connectionStatus.availableSites.map((site) => (
                     <button
-                      key={site.id}
+                      key={site.resourceKey}
                       type="button"
                       className="w-full rounded-lg border px-3 py-3 text-left transition-colors hover:bg-[var(--color-accent-subtle)]"
                       style={{ borderColor: 'var(--color-border)' }}
-                      onClick={() => void selectSite(site.id)}
+                      onClick={() => void selectSite(site.resourceKey)}
                       disabled={isSelectingSite}
                     >
                       <div className="font-medium" style={{ color: 'var(--color-text-primary)' }}>{site.name}</div>

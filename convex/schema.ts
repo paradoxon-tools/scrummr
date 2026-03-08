@@ -79,9 +79,11 @@ const jiraConnectionSnapshot = v.object({
 });
 
 const jiraAccessibleSite = v.object({
+  resourceKey: v.string(),
   id: v.string(),
   name: v.string(),
   url: v.string(),
+  scopes: v.array(v.string()),
 });
 
 export default defineSchema({
@@ -120,6 +122,7 @@ export default defineSchema({
   jiraConnections: defineTable({
     ownerUserId: v.string(),
     ownerName: v.string(),
+    selectedResourceKey: v.union(v.string(), v.null()),
     siteUrl: v.union(v.string(), v.null()),
     siteName: v.union(v.string(), v.null()),
     cloudId: v.union(v.string(), v.null()),
