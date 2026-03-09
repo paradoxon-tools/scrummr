@@ -18,6 +18,29 @@ const createServerEventMessage = (event: ServerEvent): MessageEvent<string> =>
     data: JSON.stringify(event),
   })
 
+const ANONYMOUS_CLIENT_ID_STORAGE_KEY = 'scrummr.anonymous_client_id'
+
+const getOrCreateAnonymousClientId = (): string => {
+  try {
+    const storedClientId = window.sessionStorage.getItem(ANONYMOUS_CLIENT_ID_STORAGE_KEY)?.trim() ?? ''
+    if (storedClientId) {
+      return storedClientId
+    }
+  } catch {
+    // Fall back to an in-memory id when storage is unavailable.
+  }
+
+  const clientId = crypto.randomUUID()
+
+  try {
+    window.sessionStorage.setItem(ANONYMOUS_CLIENT_ID_STORAGE_KEY, clientId)
+  } catch {
+    // Ignore storage failures and keep using the generated id for this page lifetime.
+  }
+
+  return clientId
+}
+
 export class RoomConnection {
   private client: ConvexClient
   private clientId: string
@@ -35,7 +58,7 @@ export class RoomConnection {
 
   constructor(convexUrl: string) {
     this.client = new ConvexClient(convexUrl)
-    this.clientId = crypto.randomUUID()
+    this.clientId = getOrCreateAnonymousClientId()
     this.listeners = {
       open: new Set(),
       close: new Set(),
