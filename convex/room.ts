@@ -100,6 +100,7 @@ const CRDT_UPDATE_MAX_BYTES = 1024 * 256
 const PRESENCE_STALE_AFTER_MS = 45_000
 const SYNC_RETRY_BASE_DELAY_MS = 5_000
 const SYNC_RETRY_MAX_DELAY_MS = 60_000
+const AUTHENTICATED_CLIENT_ID_PREFIX = 'clerk:'
 
 const createDefaultRoomSettings = (): RoomSettingsSnapshot => ({
   allowParticipantEditingOutsideFocus: true,
@@ -133,6 +134,9 @@ const getIdentityUserId = (identity: IdentityLike): string =>
   typeof identity.subject === 'string' && identity.subject.trim()
     ? identity.subject.trim().slice(0, 200)
     : identity.tokenIdentifier.trim().slice(0, 200)
+
+const getAuthenticatedClientId = (identity: IdentityLike): string =>
+  normalizeIssueId(`${AUTHENTICATED_CLIENT_ID_PREFIX}${getIdentityUserId(identity)}`)
 
 const normalizeName = (value: unknown) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 40) : '')
 const normalizeIssueId = (value: unknown) => (typeof value === 'string' ? value.trim().slice(0, FIELD_ID_MAX_LENGTH) : '')
@@ -1177,7 +1181,12 @@ export const snapshot = query({
     clientId: v.optional(v.string()),
   },
   handler: async (ctx, args: { clientId?: string } | undefined): Promise<RoomStateSnapshot> => {
-    const clientId = typeof args?.clientId === 'string' && args.clientId.trim() ? args.clientId.trim() : crypto.randomUUID()
+    const identity = await ctx.auth.getUserIdentity()
+    const clientId = identity
+      ? getAuthenticatedClientId(identity)
+      : typeof args?.clientId === 'string' && args.clientId.trim()
+        ? args.clientId.trim()
+        : crypto.randomUUID()
     const room = normalizeRoom(await (ctx as QueryCtx).db.query('rooms').first()) ?? {
       ...createDefaultRoom(),
     }
@@ -1227,7 +1236,12 @@ export const sendEvent = mutation({
     event: v.optional(v.any()),
   },
   handler: async (ctx, args: { clientId?: string; event?: unknown } | undefined) => {
-    const clientId = typeof args?.clientId === 'string' ? args.clientId.trim() : ''
+    const identity = await ctx.auth.getUserIdentity()
+    const clientId = identity
+      ? getAuthenticatedClientId(identity)
+      : typeof args?.clientId === 'string'
+        ? args.clientId.trim()
+        : ''
     const event = args?.event as ClientEvent | undefined
     if (!clientId || !event || typeof event !== 'object' || typeof event.type !== 'string') {
       return { ok: false, message: 'Invalid message format.' }
@@ -1776,7 +1790,7 @@ export const claimOwnerOrchestrator = mutation({
       return { ok: false, message: 'Only the Jira-connected facilitator can claim the orchestrator role.' }
     }
 
-    const clientId = normalizeIssueId(args.clientId)
+    const clientId = getAuthenticatedClientId(identity) || normalizeIssueId(args.clientId)
     if (!clientId) {
       return { ok: false, message: 'Participant id is invalid.' }
     }

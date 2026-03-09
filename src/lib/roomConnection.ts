@@ -56,9 +56,9 @@ export class RoomConnection {
   private closeStarted = false
   readyState: number = WebSocket.CONNECTING
 
-  constructor(convexUrl: string) {
+  constructor(convexUrl: string, clientId?: string) {
     this.client = new ConvexClient(convexUrl)
-    this.clientId = getOrCreateAnonymousClientId()
+    this.clientId = typeof clientId === 'string' && clientId.trim() ? clientId.trim() : getOrCreateAnonymousClientId()
     this.listeners = {
       open: new Set(),
       close: new Set(),
@@ -174,7 +174,7 @@ export class RoomConnection {
   }
 }
 
-export const createRoomConnection = (): RoomConnection | null => {
+export const createRoomConnection = (clientId?: string): RoomConnection | null => {
   const convexUrl =
     import.meta.env.VITE_CONVEX_URL?.trim() ||
     import.meta.env.NEXT_PUBLIC_CONVEX_URL?.trim() ||
@@ -182,5 +182,5 @@ export const createRoomConnection = (): RoomConnection | null => {
   if (!convexUrl) {
     return null
   }
-  return new RoomConnection(convexUrl)
+  return new RoomConnection(convexUrl, clientId)
 }

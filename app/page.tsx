@@ -1,5 +1,6 @@
 'use client'
 
+import { useUser } from '@clerk/tanstack-react-start'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAction, useQuery } from 'convex/react'
 import * as Y from 'yjs'
@@ -42,6 +43,8 @@ const CRDT_BOOTSTRAP_ORIGIN = Symbol('crdt-bootstrap')
 const ORCHESTRATOR_SCROLL_SYNC_DELAY_MS = 90
 const PARTICIPANT_HEARTBEAT_INTERVAL_MS = 15_000
 const INACTIVITY_UNFOCUS_DELAY_MS = 30_000
+const AUTHENTICATED_CLIENT_ID_PREFIX = 'clerk:'
+const ANONYMOUS_CONNECTION_KEY = 'anonymous'
 
 const createEmptyIssueWorkspace = (): RoomStateSnapshot['issueWorkspace'] => ({
   selectedIssueId: null,
@@ -77,6 +80,8 @@ const toStringOrEmpty = (value: unknown): string => (typeof value === 'string' ?
 const normalizeName = (value: string): string => value.trim().replace(/\s+/g, ' ').slice(0, 40)
 const normalizeIssueId = (value: string): string => value.trim().slice(0, 80)
 const normalizeIssueKey = (value: string): string => value.trim().toUpperCase().slice(0, 40)
+const buildAuthenticatedClientId = (userId: string): string =>
+  normalizeIssueId(`${AUTHENTICATED_CLIENT_ID_PREFIX}${userId}`)
 
 const normalizeEditorText = (value: string, maxLength = 16000): string => value.replace(/\r\n/g, '\n').slice(0, maxLength)
 const normalizeEditorFieldId = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 80)
@@ -422,6 +427,7 @@ const decodeBinaryPayload = (value: string): Uint8Array | null => {
 }
 
 export default function HomePage() {
+  const { user, isLoaded: isUserLoaded } = useUser()
   const syncIssueFieldAction = useAction(api.jira.syncIssueField)
   const canCurrentUserSyncJira = useQuery(api.room.canCurrentUserSyncJira, {}) ?? false
 
@@ -448,9 +454,15 @@ export default function HomePage() {
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
 
   const socketRef = useRef<RoomConnection | null>(null)
+  const activeConnectionKeyRef = useRef<string | null>(null)
   const isConnectedRef = useRef(false)
   const isConnectingRef = useRef(false)
+  const isUserLoadedRef = useRef(false)
+  const preferredClientIdRef = useRef<string | undefined>(undefined)
+  const preferredConnectionKeyRef = useRef<string | null>(null)
+  const autoConnectInitializedRef = useRef(false)
   const pendingJoinNameRef = useRef('')
+  const pendingReconnectNameRef = useRef<string | null>(null)
   const lastJoinAttemptAtRef = useRef(0)
   const isProfileEditingRef = useRef(false)
   const isFollowingOrchestratorRef = useRef(true)
@@ -507,6 +519,20 @@ export default function HomePage() {
   useEffect(() => {
     jiraIssuesRef.current = jiraIssues
   }, [jiraIssues])
+
+  const preferredClientId = user?.id ? buildAuthenticatedClientId(user.id) : undefined
+  const preferredConnectionKey = isUserLoaded
+    ? preferredClientId ?? ANONYMOUS_CONNECTION_KEY
+    : null
+
+  useEffect(() => {
+    isUserLoadedRef.current = isUserLoaded
+  }, [isUserLoaded])
+
+  useEffect(() => {
+    preferredClientIdRef.current = preferredClientId
+    preferredConnectionKeyRef.current = preferredConnectionKey
+  }, [preferredClientId, preferredConnectionKey])
 
   const send = (event: ClientEvent): void => {
     const socket = socketRef.current
@@ -1204,6 +1230,11 @@ export default function HomePage() {
       return
     }
 
+    if (!isUserLoadedRef.current) {
+      setConnectionMessage('Checking your sign-in status...')
+      return
+    }
+
     const normalizedName = normalizeName(explicitName ?? nameInput)
     if (!normalizedName) {
       setConnectionMessage('Enter a display name to join.')
@@ -1239,7 +1270,7 @@ export default function HomePage() {
     isConnectingRef.current = true
     setIsConnecting(true)
 
-    const nextSocket = createRoomConnection()
+    const nextSocket = createRoomConnection(preferredClientIdRef.current)
     if (!nextSocket) {
       isConnectingRef.current = false
       setIsConnecting(false)
@@ -1248,6 +1279,7 @@ export default function HomePage() {
     }
 
     socketRef.current = nextSocket
+    activeConnectionKeyRef.current = preferredConnectionKeyRef.current
 
     nextSocket.addEventListener('open', () => {
       if (socketRef.current !== nextSocket) {
@@ -1394,11 +1426,20 @@ export default function HomePage() {
       lastSentOrchestratorViewTargetIdRef.current = null
       lastSentOrchestratorScrollTopRef.current = -1
       lastSentFollowStateRef.current = null
+      activeConnectionKeyRef.current = null
       const emptyState = createEmptyState()
       roomStateRef.current = emptyState
       setRoomState(emptyState)
       disposeAllIssueDocs()
       setJiraIssues(null)
+      const reconnectName = pendingReconnectNameRef.current
+      if (reconnectName) {
+        pendingReconnectNameRef.current = null
+        setConnectionMessage('Reconnecting with your account...')
+        window.setTimeout(() => connect(reconnectName), 0)
+        return
+      }
+
       setConnectionMessage('Connection closed. Rejoin to continue planning.')
     })
 
@@ -1637,12 +1678,19 @@ export default function HomePage() {
   }
 
   useEffect(() => {
+    if (!isUserLoaded || autoConnectInitializedRef.current) {
+      return
+    }
+
+    autoConnectInitializedRef.current = true
     const storedName = readStoredName()
     if (storedName) {
       setNameInput(storedName)
       connect(storedName)
     }
+  }, [isUserLoaded])
 
+  useEffect(() => {
     return () => {
       window.clearTimeout(profileSyncTimerRef.current)
       window.clearInterval(heartbeatTimerRef.current)
@@ -1654,6 +1702,25 @@ export default function HomePage() {
       socketRef.current?.close()
     }
   }, [])
+
+  useEffect(() => {
+    if (!preferredConnectionKey || !socketRef.current) {
+      return
+    }
+
+    if (activeConnectionKeyRef.current === preferredConnectionKey) {
+      return
+    }
+
+    const reconnectName = normalizeName(joinedName || pendingJoinNameRef.current || nameInput)
+    if (!reconnectName) {
+      return
+    }
+
+    pendingReconnectNameRef.current = reconnectName
+    setConnectionMessage('Switching to your account...')
+    socketRef.current.close()
+  }, [preferredConnectionKey, joinedName, nameInput])
 
   useEffect(() => {
     if (isProfileEditing) {
