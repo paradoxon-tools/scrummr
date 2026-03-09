@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type {
   ClientEvent,
@@ -78,6 +79,9 @@ type MutationCtx = {
     patch: (id: unknown, value: unknown) => Promise<void>;
     delete: (id: unknown) => Promise<void>;
   };
+  scheduler: {
+    runAfter: (delayMs: number, fn: unknown, args: Record<string, never>) => Promise<unknown>;
+  };
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
@@ -98,6 +102,7 @@ const ISSUE_PRESENCE_TARGET_ID_MAX_LENGTH = 120
 const MAX_ORCHESTRATOR_SCROLL_TOP = 2_000_000
 const CRDT_UPDATE_MAX_BYTES = 1024 * 256
 const PRESENCE_STALE_AFTER_MS = 45_000
+const STALE_PARTICIPANT_SWEEP_DELAY_MS = PRESENCE_STALE_AFTER_MS + 1_000
 const SYNC_RETRY_BASE_DELAY_MS = 5_000
 const SYNC_RETRY_MAX_DELAY_MS = 60_000
 const AUTHENTICATED_CLIENT_ID_PREFIX = 'clerk:'
@@ -1093,6 +1098,14 @@ const cleanupStaleParticipants = async (ctx: MutationCtx, room: RoomRecord, part
   return remainingParticipants
 }
 
+const scheduleStaleParticipantSweep = async (ctx: MutationCtx): Promise<void> => {
+  await ctx.scheduler.runAfter(
+    STALE_PARTICIPANT_SWEEP_DELAY_MS,
+    internal.room.sweepStaleParticipantsInternal,
+    {},
+  )
+}
+
 const normalizeParticipant = (raw: unknown): ParticipantRecord | null => {
   if (!isRecord(raw)) {
     return null
@@ -1230,6 +1243,20 @@ export const snapshot = query({
   },
 })
 
+export const sweepStaleParticipantsInternal = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const roomDoc = await ensureRoom(ctx as MutationCtx)
+    const room = {
+      ...clone(roomDoc),
+      _id: roomDoc._id,
+    }
+    const participants = await listParticipants(ctx as QueryCtx)
+    const remainingParticipants = await cleanupStaleParticipants(ctx as MutationCtx, room, participants)
+    return { ok: true, participantCount: remainingParticipants.length }
+  },
+})
+
 export const sendEvent = mutation({
   args: {
     clientId: v.optional(v.string()),
@@ -1272,6 +1299,7 @@ export const sendEvent = mutation({
 
         if (participant) {
           await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { name: normalizedName, lastSeenAt: Date.now() })
+          await scheduleStaleParticipantSweep(ctx as MutationCtx)
         } else {
           await ctx.db.insert('participants', {
             clientId,
@@ -1281,6 +1309,7 @@ export const sendEvent = mutation({
             isFollowingOrchestrator: true,
             lastSeenAt: Date.now(),
           })
+          await scheduleStaleParticipantSweep(ctx as MutationCtx)
           if (!room.orchestratorId && room.jiraIssues) {
             room.orchestratorId = clientId
             resetOrchestratorView(room, room.selectedIssueId)
@@ -1296,6 +1325,7 @@ export const sendEvent = mutation({
         }
 
         await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { lastSeenAt: Date.now() })
+        await scheduleStaleParticipantSweep(ctx as MutationCtx)
         return { ok: true }
       }
       case 'update_name': {
@@ -1309,6 +1339,7 @@ export const sendEvent = mutation({
         }
 
         await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { name: normalizedName, lastSeenAt: Date.now() })
+        await scheduleStaleParticipantSweep(ctx as MutationCtx)
         return { ok: true }
       }
       case 'reroll_color': {
@@ -1320,6 +1351,7 @@ export const sendEvent = mutation({
           colorHue: pickDistinctHue(participants, clientId, participant.colorHue),
           lastSeenAt: Date.now(),
         })
+        await scheduleStaleParticipantSweep(ctx as MutationCtx)
         return { ok: true }
       }
       case 'set_vote': {
@@ -1332,6 +1364,7 @@ export const sendEvent = mutation({
         }
 
         await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { vote: event.vote === null ? null : event.vote, lastSeenAt: Date.now() })
+        await scheduleStaleParticipantSweep(ctx as MutationCtx)
         return { ok: true }
       }
       case 'select_issue': {
@@ -1614,6 +1647,7 @@ export const sendEvent = mutation({
         }
 
         await ctx.db.patch(participant._id as Parameters<typeof ctx.db.patch>[0], { isFollowingOrchestrator: nextState, lastSeenAt: Date.now() })
+        await scheduleStaleParticipantSweep(ctx as MutationCtx)
         return { ok: true }
       }
       case 'reveal': {
