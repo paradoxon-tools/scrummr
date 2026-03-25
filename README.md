@@ -62,6 +62,22 @@ gradle -p backend build
 docker build -t scrummr-backend ./backend
 ```
 
+### Publish to GitHub Container Registry
+
+A GitHub Actions workflow publishes the backend image to GHCR on pushes to `master` that touch `backend/**`.
+
+Image name:
+
+```text
+ghcr.io/<github-owner>/scrummr-backend
+```
+
+Tags include:
+
+- `latest` on the default branch
+- the branch name
+- a `sha-<commit>` tag
+
 ### Run with Docker Compose
 
 ```bash

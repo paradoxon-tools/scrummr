@@ -29,6 +29,7 @@ This repository is split into two separate applications:
   - `gradle -p backend build`
 - Keep SQLite as the default embedded database unless explicitly asked otherwise.
 - Preserve Docker support for the backend.
+- Keep the GitHub Actions workflow for publishing the backend image to GHCR working when changing backend build or Docker configuration.
 
 ## Frontend rules
 
