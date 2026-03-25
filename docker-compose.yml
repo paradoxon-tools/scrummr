@@ -1,0 +1,15 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    image: scrummr-backend:latest
+    ports:
+      - "8080:8080"
+    environment:
+      SQLITE_DB_PATH: /app/data/scrummr.db
+      FRONTEND_ORIGIN: http://localhost:5173
+    volumes:
+      - scrummr-data:/app/data
+
+volumes:
+  scrummr-data:
