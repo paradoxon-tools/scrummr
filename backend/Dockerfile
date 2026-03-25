@@ -1,6 +1,6 @@
 FROM gradle:8.14.0-jdk21 AS build
 WORKDIR /build
-COPY build.gradle settings.gradle ./
+COPY build.gradle.kts settings.gradle.kts ./
 COPY src ./src
 RUN gradle bootJar --no-daemon
 

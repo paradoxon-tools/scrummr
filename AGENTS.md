@@ -4,7 +4,7 @@
 
 This repository is split into two separate applications:
 
-- `backend/`: Spring Boot backend built with Gradle
+- `backend/`: Spring Boot backend built with Gradle and Kotlin
   - Provides the REST API under `/api`
   - Uses SQLite for persistence
   - Can be bundled into a Docker image
@@ -22,6 +22,7 @@ This repository is split into two separate applications:
 
 ## Backend rules
 
+- Use Kotlin for backend code; do not add new Java source files unless explicitly requested.
 - Use Gradle, not Maven.
 - Prefer commands like:
   - `gradle -p backend bootRun`

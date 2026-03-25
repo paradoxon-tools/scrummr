@@ -12,9 +12,9 @@ The backend persists data in SQLite and can be built into a single Docker image 
 ```text
 backend/
   Dockerfile
-  build.gradle
-  settings.gradle
-  src/main/java/...
+  build.gradle.kts
+  settings.gradle.kts
+  src/main/kotlin/...
   src/main/resources/...
 frontend/
   package.json
@@ -27,6 +27,7 @@ frontend/
 ### Features
 
 - Spring Boot 3
+- Kotlin backend
 - Gradle build
 - REST API under `/api`
 - SQLite persistence via JDBC
