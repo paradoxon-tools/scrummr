@@ -1,70 +1,50 @@
-# Scrummr Agent Guide
+# AGENTS.md
 
-## Project overview
+## Project architecture
 
-- Scrummr is a TanStack Start + Vite frontend backed by Convex.
-- Use Bun as the package manager and runtime.
-- Deployments go through Vercel, with Convex deployed as part of the Vercel build flow.
+This repository is split into two separate applications:
 
-## Source-of-truth commands
+- `backend/`: Spring Boot backend built with Gradle and Kotlin
+  - Provides the REST API under `/api`
+  - Uses SQLite for persistence
+  - Can be bundled into a Docker image
+- `frontend/`: SvelteKit frontend
+  - Talks to the backend over HTTP
+  - Uses `VITE_API_BASE_URL` to locate the API
 
-- Install dependencies: `bun install`
-- Run frontend + Convex locally: `bun run dev`
-- Seed Convex once, then run full dev flow: `bun run dev:all`
-- Run frontend only: `bun run dev:web`
-- Run Convex only: `bun run dev:convex`
-- Build production assets: `bun run build`
-- Preview the production build locally: `bun run start`
-- Required verification before code commits: `bun run check`
-- Run type checks only: `bun run typecheck`
-- Run the Vercel/Convex deployment build: `bun run build:vercel`
+## Working guidelines
 
-Do not invent commands that do not exist in this repo.
+- Treat `backend/` and `frontend/` as separate applications with a clear API boundary.
+- Prefer making changes in the appropriate app instead of re-introducing a monolithic setup.
+- Keep backend API changes and frontend client changes consistent.
+- When changing backend endpoints, also update any affected frontend API calls and documentation.
+- When changing build or runtime behavior, update `README.md` and any relevant config files.
 
-- There is no dedicated `test` script today.
-- There is no dedicated `lint` script wired for routine use today.
-- Do not claim to have run `bun test` or `bun run lint` unless you added those scripts as part of the task.
+## Backend rules
 
-## Deploy guidance
+- Use Kotlin for backend code; do not add new Java source files unless explicitly requested.
+- Use Gradle, not Maven.
+- Prefer commands like:
+  - `gradle -p backend bootRun`
+  - `gradle -p backend build`
+- Keep SQLite as the default embedded database unless explicitly asked otherwise.
+- Preserve Docker support for the backend.
+- Keep the GitHub Actions workflow for publishing the backend image to GHCR working when changing backend build or Docker configuration.
 
-- Vercel uses `bun run build:vercel`.
-- `build:vercel` runs `sync-convex-preview-env.mjs`, then `convex deploy --cmd "bun run build" --cmd-url-env-var-name VITE_CONVEX_URL`.
-- `vercel.json` sets `buildCommand` to `bun run build:vercel` and `outputDirectory` to `dist/client`.
-- `CONVEX_DEPLOY_KEY` is required in Vercel.
-- Preview env sync depends on `VERCEL_ENV`, `VERCEL_GIT_COMMIT_REF`, and `CLERK_FRONTEND_API_URL`.
-- Agents may use `bun run build:vercel` to validate deploy behavior locally, but must not trigger production deployment work unless the user explicitly asks for it.
+## Frontend rules
 
-## Working rules
+- Use SvelteKit for frontend work.
+- Keep backend base URL configurable via environment variables.
+- Prefer simple, typed API helpers for backend communication.
 
-- Always commit and push: every completed task that changes tracked files must end with git commits and a push to the current branch.
-- Use granular commits: when work naturally splits into milestones, make multiple small local commits grouped by intent.
-- Default push timing: make granular local commits during the task, then push once at the end after the final commit.
-- If push fails due to credentials, branch protection, remote divergence, or network issues, report that explicitly.
-- Keep changes minimal: touch only files required for the task, prefer surgical edits, and avoid unrelated cleanup or reformatting.
-- Preserve existing patterns unless the task specifically requires changing them.
+## Commit policy
 
-## Verification rules
+- Always create a git commit for completed work.
+- After finishing a task that changes files, make a commit with a clear, concise message.
+- Do not consider the task fully complete until the commit has been created successfully.
+- If a task is only partially completed or blocked, clearly say so instead of making a misleading commit.
 
-- Run `bun run check` before committing code changes unless the user explicitly says not to or the environment makes it impossible.
-- If `bun run check` cannot run, state that clearly and explain why.
-- For docs-only changes, verification can be skipped; state that the change is documentation-only.
+## Documentation policy
 
-## Generated and ignored files
-
-Tracked generated files may need to be committed when regenerated:
-
-- `app/routeTree.gen.ts`
-- `convex/_generated/*`
-
-Ignored build artifacts must not be committed:
-
-- `dist/`
-- `.next/`
-- `.tanstack/`
-- `*.tsbuildinfo`
-
-## Environment notes
-
-- Local environment variables live in `.env.local`.
-- Full setup and required Convex, Clerk, and Jira/Atlassian OAuth variables are documented in `README.md`.
-- Reference `README.md` for the complete environment list instead of duplicating it here.
+- Keep this split architecture reflected in docs.
+- If the structure changes, update this file accordingly.

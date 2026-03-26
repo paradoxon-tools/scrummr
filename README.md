@@ -1,102 +1,133 @@
-# Scrummr v1
+# Scrummr
 
-Single-room scrum planning poker app built with TanStack Start + Convex.
+This project has been refactored into two separate applications:
 
-## Features
+- `backend/`: a dedicated Spring Boot REST API
+- `frontend/`: a SvelteKit frontend
 
-- Name-only login with local storage prefill and editable display name.
-- Per-user light/dark mode toggle stored in local browser preferences.
-- Real-time multi-user voting in one shared room.
-- Any participant can reveal estimates for everyone at once.
-- After reveal, the action button becomes `Next ticket` to reset the round.
-- Jira OAuth connection for facilitators, plus session-level ticket prefix/quick-filter controls to load tickets grouped by their assigned sprint (current/future) plus unsprinted backlog candidates.
-- Jira loads are shared at room level: once one participant refreshes tickets, everyone sees the same list.
-- Click any Jira ticket to open a shared in-room ticket editor with local field edits and subtasks.
-- Live field/subtask presence indicators show who is currently editing what.
+The backend persists data in SQLite and can be built into a single Docker image that contains the application and its local database file.
 
-## Run locally
+## Project structure
 
-Install dependencies:
-
-```bash
-bun install
+```text
+backend/
+  Dockerfile
+  build.gradle.kts
+  settings.gradle.kts
+  src/main/kotlin/...
+  src/main/resources/...
+frontend/
+  package.json
+  src/routes/+page.svelte
+  src/lib/api.ts
 ```
 
-Set your environment variables:
+## Backend
+
+### Features
+
+- Spring Boot 3
+- Kotlin backend
+- Gradle build
+- REST API under `/api`
+- SQLite persistence via JDBC
+- Single-container Docker setup
+
+### Run locally
 
 ```bash
-# .env.local
-VITE_CONVEX_URL=https://<your-deployment>.convex.cloud
-VITE_CONVEX_SITE_URL=https://<your-deployment>.convex.site
-VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
-CLERK_SECRET_KEY=sk_test_...
-CLERK_JWT_ISSUER_DOMAIN=https://<your-clerk-domain>
-ATLASSIAN_OAUTH_CLIENT_ID=...
-ATLASSIAN_OAUTH_CLIENT_SECRET=...
+gradle -p backend bootRun
 ```
 
-Run frontend + Convex together:
+The API runs on `http://localhost:8080`.
+
+### Main endpoints
+
+- `GET /api/health`
+- `GET /api/todos`
+- `POST /api/todos`
+- `PUT /api/todos/{id}`
+- `PATCH /api/todos/{id}/toggle`
+- `DELETE /api/todos/{id}`
+
+### Build jar
 
 ```bash
-bun run dev
+gradle -p backend build
 ```
 
-Or run them separately:
+### Build Docker image
 
 ```bash
-bun run dev:convex
+docker build -t scrummr-backend ./backend
 ```
+
+### Publish to GitHub Container Registry
+
+A GitHub Actions workflow publishes the backend image to GHCR on pushes to `master` that touch `backend/**`.
+
+Image name:
+
+```text
+ghcr.io/<github-owner>/scrummr-backend
+```
+
+Tags include:
+
+- `latest` on the default branch
+- the branch name
+- a `sha-<commit>` tag
+
+### Run with Docker Compose
 
 ```bash
-bun run dev:web
+docker compose up --build
 ```
 
-The frontend runs on `http://localhost:5173`.
+This creates a named volume for the SQLite database at `/app/data/scrummr.db` inside the container.
 
-## Optional configuration
+## Frontend
 
-- `VITE_CONVEX_URL` points the app to your Convex deployment.
-- `VITE_CONVEX_SITE_URL` points OAuth callbacks at your Convex HTTP endpoint.
-- `VITE_CLERK_PUBLISHABLE_KEY` is required for Clerk in the frontend.
-- `CLERK_SECRET_KEY` is required for Clerk server operations.
-- `CLERK_JWT_ISSUER_DOMAIN` is required by Convex auth config.
-- `ATLASSIAN_OAUTH_CLIENT_ID` and `ATLASSIAN_OAUTH_CLIENT_SECRET` enable Jira OAuth.
+### Features
 
-## Deploy to Vercel with Convex
+- SvelteKit UI
+- Talks directly to the Spring Boot backend
+- Simple todo workflow for verifying the split architecture end-to-end
 
-This repo includes a `build:vercel` script that deploys Convex first, then builds the TanStack Start app:
+### Install and run
 
 ```bash
-bun run build:vercel
+cd frontend
+npm install
+npm run dev
 ```
 
-Set Vercel Build Command to:
+The frontend runs on `http://localhost:5173` by default.
+
+### Environment
+
+Copy `frontend/.env.example` to `frontend/.env` if you need to change the backend URL:
 
 ```bash
-bun run build:vercel
+VITE_API_BASE_URL=http://localhost:8080
 ```
 
-Set Vercel Install Command to:
+## Root helper scripts
+
+From the repository root:
 
 ```bash
-bun install
+npm run frontend:dev
+npm run frontend:build
+npm run backend:run
+npm run backend:build
+npm run backend:docker
+npm run backend:compose
 ```
 
-Required Vercel environment variable:
+## Notes
 
-- `CONVEX_DEPLOY_KEY` (create a production deploy key in Convex Dashboard and add it in Vercel)
-
-Notes:
-
-- `VITE_CONVEX_URL` is injected during the build by `convex deploy --cmd-url-env-var-name VITE_CONVEX_URL`.
-- You do not need to manually set `VITE_CONVEX_URL` in Vercel when using this build flow.
-
-## Jira integration notes
-
-- Scrummr loads/syncs Jira through Convex actions (`convex/jira.ts`).
-- Facilitators connect Jira once through Atlassian OAuth. Access and refresh tokens stay server-side in Convex.
-- The Jira request uses the ticket prefix (project key, for example `TEAM`) to load tickets, then groups them by sprint so each current/future sprint appears as its own bucket.
-- Successful Jira loads are stored in Convex room state so late joiners and other participants share the same ticket buckets.
-- Description edits can sync back to Jira for the connected facilitator account.
-- Presence badges in the editor are local-collaboration hints and are cleared when users blur fields or disconnect.
-- Room state stores only non-secret Jira session metadata. Browser storage keeps only non-secret dashboard session prefs.
+- The old TanStack Start / Convex / Clerk scaffold is no longer the primary app architecture.
+- SQLite schema is initialized automatically from `backend/src/main/resources/schema.sql`.
+- For production, you will usually want to set `FRONTEND_ORIGIN` when running the backend container.
+- If you want fully reproducible local Gradle usage, the next step would be adding the Gradle wrapper (`gradlew`, `gradlew.bat`, and `gradle/wrapper/*`).
