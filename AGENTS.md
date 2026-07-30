@@ -48,3 +48,13 @@ This repository is split into two separate applications:
 
 - Keep this split architecture reflected in docs.
 - If the structure changes, update this file accordingly.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+This repository uses the single-context domain documentation layout. See `docs/agents/domain.md`.
